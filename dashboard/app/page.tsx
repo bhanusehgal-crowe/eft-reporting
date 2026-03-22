@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Chart as ChartJS,
   ArcElement,
@@ -277,7 +277,7 @@ export default function Dashboard() {
             <button key={item.id} onClick={() => setPage(item.id)}
               style={{
                 display: "flex", alignItems: "center", gap: 10, width: "100%",
-                padding: "10px 20px", background: "none", border: "none",
+                padding: "10px 20px", border: "none",
                 borderLeft: `3px solid ${page === item.id ? "#60a5fa" : "transparent"}`,
                 color: page === item.id ? "#fff" : "rgba(255,255,255,0.7)",
                 background: page === item.id ? "rgba(255,255,255,0.1)" : "transparent",
