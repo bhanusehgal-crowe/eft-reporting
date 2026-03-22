@@ -1,0 +1,63 @@
+rules:
+  - rule_code: FINTRAC_SINGLE_THRESHOLD
+    rule_name: Single Transaction Threshold
+    description: Single international EFT >= CAD $10,000 not reported to FINTRAC
+    rule_type: THRESHOLD
+    severity: BREACH
+    parameters:
+      threshold_cad: 10000
+
+  - rule_code: FINTRAC_24HR_AGGREGATION
+    rule_name: 24-Hour Aggregation Rule
+    description: Aggregated EFTs >= CAD $10,000 within 24-hour window not reported
+    rule_type: AGGREGATION
+    severity: BREACH
+    parameters:
+      threshold_cad: 10000
+      window_hours: 24
+
+  - rule_code: FINTRAC_FILING_DEADLINE
+    rule_name: Filing Deadline
+    description: EFTR filed more than 5 business days after the transaction date
+    rule_type: DEADLINE
+    severity: BREACH
+    parameters:
+      max_business_days: 5
+
+  - rule_code: FINTRAC_MANDATORY_FIELDS
+    rule_name: Mandatory Fields Check
+    description: Required FINTRAC fields missing from EFT record
+    rule_type: COMPLETENESS
+    severity: WARN
+    parameters:
+      required_fields:
+        - transaction_id
+        - value_date
+        - amount
+        - currency_code
+        - direction
+        - originator_name
+        - beneficiary_name
+
+  - rule_code: FINTRAC_TRAVEL_RULE
+    rule_name: Travel Rule
+    description: Originator or beneficiary information missing from international EFT
+    rule_type: COMPLETENESS
+    severity: WARN
+    parameters: {}
+
+  - rule_code: FINTRAC_FX_CONVERSION
+    rule_name: FX Conversion Validation
+    description: CAD amount not derived from Bank of Canada rate or differs by > 1%
+    rule_type: PATTERN
+    severity: WARN
+    parameters:
+      tolerance_pct: 0.01
+
+  - rule_code: FINTRAC_OVER_REPORTING
+    rule_name: Over-Reporting Detection
+    description: EFTR submitted for EFT below $10,000 CAD threshold
+    rule_type: THRESHOLD
+    severity: INFO
+    parameters:
+      threshold_cad: 10000

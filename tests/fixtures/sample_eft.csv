@@ -1,0 +1,21 @@
+transaction_id,value_date,amount,currency_code,cad_amount,cad_conversion_rate,direction,originator_name,originator_address,originator_account,beneficiary_name,beneficiary_address,beneficiary_account,transaction_type
+EFT001,2026-03-01,15000.00,CAD,15000.00,1.000000,INITIATION,Acme Corp,123 Main St Toronto ON,ACC-1001,Global Ltd,45 Bay St London UK,ACC-2001,WIRE
+EFT002,2026-03-02,22000.00,CAD,22000.00,1.000000,INITIATION,Acme Corp,123 Main St Toronto ON,ACC-1001,Pacific Co,99 Harbour Rd HK,ACC-2002,WIRE
+EFT003,2026-03-03,11500.00,CAD,11500.00,1.000000,RECEIPT,Overseas Inc,77 Park Ave New York NY,ACC-3001,Maple Bank Client,500 King St Toronto ON,ACC-1002,WIRE
+EFT004,2026-03-05,18000.00,CAD,18000.00,1.000000,INITIATION,Acme Corp,123 Main St Toronto ON,ACC-1001,Euro Transfer GmbH,Berliner Str 10 Berlin,ACC-2003,WIRE
+EFT005,2026-03-06,12500.00,CAD,12500.00,1.000000,RECEIPT,Asia Pacific Ltd,8 Finance St Singapore,ACC-4001,Maple Bank Client,500 King St Toronto ON,ACC-1002,WIRE
+EFT006,2026-03-08,25000.00,CAD,25000.00,1.000000,INITIATION,Northern Corp,200 Bay St Toronto ON,ACC-1003,Caribbean Holdings,Palm Beach Rd Nassau,ACC-2004,WIRE
+EFT007,2026-03-08,30000.00,CAD,30000.00,1.000000,INITIATION,Northern Corp,200 Bay St Toronto ON,ACC-1003,Caribbean Holdings,Palm Beach Rd Nassau,ACC-2004,WIRE
+EFT008,2026-03-10,5000.00,CAD,5000.00,1.000000,INITIATION,Small Biz Inc,10 Queen St Toronto ON,ACC-1004,Euro Partner,Via Roma 5 Milan Italy,ACC-2005,WIRE
+EFT009,2026-03-10,8500.00,CAD,8500.00,1.000000,INITIATION,Local Shop Ltd,55 Dundas St Toronto ON,ACC-1005,US Vendor LLC,Broadway 100 New York NY,ACC-2006,WIRE
+EFT010,2026-03-12,13000.00,CAD,13000.00,1.000000,INITIATION,West Corp,300 Granville St Vancouver BC,ACC-1006,Tokyo Corp,Shinjuku 1-1 Tokyo JP,ACC-2007,WIRE
+EFT011,2026-03-13,3500.00,CAD,3500.00,1.000000,RECEIPT,Euro Bank,1 Bahnhofstr Zurich CH,ACC-5001,Client A,100 Yonge St Toronto ON,ACC-1007,WIRE
+EFT012,2026-03-13,3000.00,CAD,3000.00,1.000000,RECEIPT,Euro Bank,1 Bahnhofstr Zurich CH,ACC-5001,Client A,100 Yonge St Toronto ON,ACC-1007,WIRE
+EFT013,2026-03-13,2500.00,CAD,2500.00,1.000000,RECEIPT,Euro Bank,1 Bahnhofstr Zurich CH,ACC-5001,Client A,100 Yonge St Toronto ON,ACC-1007,WIRE
+EFT014,2026-03-13,5000.00,CAD,5000.00,1.000000,RECEIPT,Euro Bank,1 Bahnhofstr Zurich CH,ACC-5001,Client A,100 Yonge St Toronto ON,ACC-1007,WIRE
+EFT015,2026-03-15,20000.00,USD,27000.00,,INITIATION,US Corp,Fifth Ave 500 New York NY,ACC-6001,Canadian Co,1 First St Calgary AB,ACC-1008,WIRE
+EFT016,2026-03-16,11000.00,CAD,11000.00,1.000000,INITIATION,Resource Ltd,Oil Sands Rd Fort McMurray AB,ACC-1009,London Bank,Lombard St 1 London UK,ACC-2008,WIRE
+EFT017,2026-03-17,16000.00,CAD,16000.00,1.000000,INITIATION,Prairie Corp,Wheat Field Rd Saskatoon SK,ACC-1010,Beijing Corp,Changan Ave 1 Beijing CN,ACC-2009,WIRE
+EFT018,2026-03-18,14500.00,CAD,14500.00,1.000000,RECEIPT,Dubai Corp,Sheikh Zayed Rd Dubai AE,ACC-7001,Maritime Ltd,1 Water St Halifax NS,ACC-1011,WIRE
+EFT019,2026-03-19,10200.00,CAD,10200.00,1.000000,INITIATION,Atlantic Co,Harbour Dr St Johns NL,ACC-1012,Irish Bank,O Connell St Dublin IE,ACC-2010,WIRE
+EFT020,2026-03-20,9500.00,CAD,9500.00,1.000000,INITIATION,Tech Startup,Innovation Dr Waterloo ON,ACC-1013,Silicon Corp,101 Castro St Mountain View CA,ACC-2011,WIRE

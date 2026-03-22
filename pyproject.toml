@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eftr"
+version = "0.1.0"
+description = "EFT Regulatory Assurance Platform — FINTRAC compliance validation"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.1",
+    "pydantic[email]>=2.5",
+    "pydantic-settings>=2.1",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "structlog>=24.1",
+    "openpyxl>=3.1",
+    "pyarrow>=14.0",
+    "httpx>=0.26",
+    "python-dotenv>=1.0",
+    "fastapi>=0.109",
+    "uvicorn[standard]>=0.27",
+    "apscheduler>=3.10",
+    "holidays>=0.45",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.2",
+    "httpx>=0.26",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=src/eftr --cov-report=term-missing"
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
