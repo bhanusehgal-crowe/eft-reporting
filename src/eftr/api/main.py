@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,26 +9,12 @@ from src.eftr.api.routers import reconciliation, reports, rules, runs
 
 def _bootstrap():
     """Create directories, initialise DB tables, seed rules if empty."""
-    # Create all mutable data directories (critical on Vercel where /tmp is writable)
     for d in [
         "data/raw/eft", "data/raw/reported", "data/raw/uploads",
         "data/processed", "data/exports", "data/quarantine",
     ]:
-        try:
-            Path(d).mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass  # read-only filesystem on Vercel — settings.py redirects to /tmp
+        Path(d).mkdir(parents=True, exist_ok=True)
 
-    # Also ensure /tmp paths exist when running on Vercel
-    import os
-    if os.environ.get("VERCEL") == "1":
-        for d in [
-            "/tmp/eftr/raw/eft", "/tmp/eftr/raw/reported", "/tmp/eftr/raw/uploads",
-            "/tmp/eftr/processed", "/tmp/eftr/exports", "/tmp/eftr/quarantine",
-        ]:
-            Path(d).mkdir(parents=True, exist_ok=True)
-
-    # Initialise DB tables
     from config.database import Base, engine
     import src.eftr.models.eft_transaction      # noqa: F401
     import src.eftr.models.reported_transaction  # noqa: F401
@@ -37,7 +24,6 @@ def _bootstrap():
     import src.eftr.models.reperformance         # noqa: F401
     Base.metadata.create_all(bind=engine)
 
-    # Seed FINTRAC rules if the table is empty
     try:
         from config.database import SessionLocal
         from src.eftr.models.rule import Rule
@@ -46,13 +32,20 @@ def _bootstrap():
                 from scripts.seed_rules import seed_rules
                 seed_rules()
     except Exception:
-        pass  # Non-fatal — rules can be seeded manually
+        pass
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _bootstrap()
+    yield
 
 
 app = FastAPI(
     title="EFTR Regulatory Assurance Platform",
     description="FINTRAC EFT compliance validation API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
