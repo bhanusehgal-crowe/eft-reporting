@@ -6,7 +6,9 @@ from pathlib import Path
 
 import yaml
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Only manipulate sys.path when run as a script, not when imported as a module
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.database import SessionLocal, engine
 from config.settings import settings
