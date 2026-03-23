@@ -1,4 +1,3 @@
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -50,17 +49,10 @@ def _bootstrap():
         pass  # Non-fatal — rules can be seeded manually
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    _bootstrap()
-    yield
-
-
 app = FastAPI(
     title="EFTR Regulatory Assurance Platform",
     description="FINTRAC EFT compliance validation API",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
 app.add_middleware(
