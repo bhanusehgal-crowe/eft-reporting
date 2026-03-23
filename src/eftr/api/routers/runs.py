@@ -1,12 +1,14 @@
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from config.database import get_session
+from config.settings import settings
 from src.eftr.models.reconciliation import ReconciliationResult, ReconciliationRun
 from src.eftr.models.rule import RuleFinding
 from src.eftr.utils.datetime_utils import utcnow
@@ -36,6 +38,42 @@ def _get_operator(x_operator_id: Optional[str] = Header(None)) -> str:
     if not x_operator_id:
         raise HTTPException(status_code=400, detail="X-Operator-ID header is required")
     return x_operator_id
+
+
+@router.post("/upload", status_code=202)
+async def upload_and_run(
+    background_tasks: BackgroundTasks,
+    eft_file: UploadFile = File(...),
+    reported_file: UploadFile = File(...),
+    operator_id: str = Form(...),
+    session: Session = Depends(get_session),
+):
+    """Accept two CSV uploads, persist to disk, and trigger the pipeline."""
+    run_id = str(uuid.uuid4())
+
+    upload_dir = Path(settings.data_raw_dir) / "uploads" / run_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    eft_path = upload_dir / (eft_file.filename or "eft.csv")
+    rep_path = upload_dir / (reported_file.filename or "reported.csv")
+
+    eft_path.write_bytes(await eft_file.read())
+    rep_path.write_bytes(await reported_file.read())
+
+    run = ReconciliationRun(
+        run_id=run_id,
+        status="PENDING",
+        triggered_by="upload",
+        operator_id=operator_id,
+        started_at=None,
+        parameters={"eft_file": str(eft_path), "reported_file": str(rep_path)},
+        created_at=utcnow(),
+    )
+    session.add(run)
+    session.commit()
+
+    background_tasks.add_task(_run_pipeline, run_id, str(eft_path), str(rep_path), operator_id)
+    return {"run_id": run_id, "status": "PENDING"}
 
 
 @router.post("", status_code=202)

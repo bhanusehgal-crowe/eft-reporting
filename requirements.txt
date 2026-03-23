@@ -1,0 +1,16 @@
+pandas>=2.1
+pydantic[email]>=2.5
+pydantic-settings>=2.1
+sqlalchemy>=2.0
+alembic>=1.13
+structlog>=24.1
+openpyxl>=3.1
+pyarrow>=14.0
+httpx>=0.26
+python-dotenv>=1.0
+fastapi>=0.109
+uvicorn[standard]>=0.27
+apscheduler>=3.10
+holidays>=0.45
+python-multipart>=0.0.9
+pyyaml>=6.0
