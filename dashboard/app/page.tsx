@@ -181,7 +181,6 @@ function UploadModal({
   const [stepIndex, setStepIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
   const [runId, setRunId] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stepRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const eftInputRef = useRef<HTMLInputElement>(null);
   const repInputRef = useRef<HTMLInputElement>(null);
@@ -196,28 +195,6 @@ function UploadModal({
     return () => { if (stepRef.current) clearInterval(stepRef.current); };
   }, [phase]);
 
-  // Poll run status
-  useEffect(() => {
-    if (!runId || phase !== "running") return;
-    pollRef.current = setInterval(async () => {
-      try {
-        const run = await apiFetch<Run>(`/runs/${runId}`);
-        if (run.status === "COMPLETED") {
-          setStepIndex(PIPELINE_STEPS.length);
-          setPhase("done");
-          clearInterval(pollRef.current!);
-          clearInterval(stepRef.current!);
-        } else if (run.status === "FAILED") {
-          setErrorMsg("The pipeline encountered an error. Check the audit log for details.");
-          setPhase("error");
-          clearInterval(pollRef.current!);
-          clearInterval(stepRef.current!);
-        }
-      } catch { /* keep polling */ }
-    }, 2500);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [runId, phase]);
-
   async function handleSubmit() {
     if (!eftFile || !repFile || !operatorId.trim()) return;
     setPhase("running");
@@ -227,13 +204,18 @@ function UploadModal({
     fd.append("reported_file", repFile);
     fd.append("operator_id", operatorId.trim());
     try {
+      // Pipeline runs synchronously on the server — this fetch blocks until complete
       const res = await fetch(`${API}/runs/upload`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
+      setStepIndex(PIPELINE_STEPS.length);
       setRunId(data.run_id);
+      setPhase("done");
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : "Upload failed");
       setPhase("error");
+    } finally {
+      if (stepRef.current) clearInterval(stepRef.current);
     }
   }
 

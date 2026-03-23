@@ -14,3 +14,5 @@ apscheduler>=3.10
 holidays>=0.45
 python-multipart>=0.0.9
 pyyaml>=6.0
+mangum>=0.17.0
+psycopg2-binary>=2.9

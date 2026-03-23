@@ -40,15 +40,18 @@ def _get_operator(x_operator_id: Optional[str] = Header(None)) -> str:
     return x_operator_id
 
 
-@router.post("/upload", status_code=202)
+@router.post("/upload", status_code=200)
 async def upload_and_run(
-    background_tasks: BackgroundTasks,
     eft_file: UploadFile = File(...),
     reported_file: UploadFile = File(...),
     operator_id: str = Form(...),
     session: Session = Depends(get_session),
 ):
-    """Accept two CSV uploads, persist to disk, and trigger the pipeline."""
+    """
+    Accept two CSV uploads, save to /tmp, run the full pipeline synchronously,
+    and return when complete.  Synchronous execution is required for Vercel
+    serverless (background tasks are killed when the response returns).
+    """
     run_id = str(uuid.uuid4())
 
     upload_dir = Path(settings.data_raw_dir) / "uploads" / run_id
@@ -72,8 +75,9 @@ async def upload_and_run(
     session.add(run)
     session.commit()
 
-    background_tasks.add_task(_run_pipeline, run_id, str(eft_path), str(rep_path), operator_id)
-    return {"run_id": run_id, "status": "PENDING"}
+    # Run synchronously so the result is available when we return
+    _run_pipeline(run_id, str(eft_path), str(rep_path), operator_id)
+    return {"run_id": run_id, "status": "COMPLETED"}
 
 
 @router.post("", status_code=202)
