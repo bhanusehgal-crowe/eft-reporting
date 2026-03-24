@@ -2,172 +2,138 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  Chart as ChartJS,
-  ArcElement,
-  Tooltip,
-  Legend,
-  CategoryScale,
-  LinearScale,
-  BarElement,
-} from "chart.js";
-import { Doughnut, Bar } from "react-chartjs-2";
-
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
+  BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+} from "recharts";
+import {
+  ShieldAlert, AlertTriangle, FileX, CheckCircle2, Upload,
+  LayoutDashboard, ClipboardList, Scale, ScrollText, Menu, X,
+  TrendingUp, TrendingDown, ChevronDown,
+} from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-// ── Types ──────────────────────────────────────────────────────
+// ── Colour palette (from screenshot) ──────────────────────────
+const C = {
+  bg:      "#F0F2F8",
+  surface: "#FFFFFF",
+  border:  "#E2E8F0",
+  text:    "#1E1B4B",
+  muted:   "#64748B",
+  // KPI gradients
+  breach:  ["#EF4444", "#B91C1C"],
+  warn:    ["#F97316", "#C2410C"],
+  missed:  ["#8B5CF6", "#6D28D9"],
+  matched: ["#10B981", "#047857"],
+  // Chart colours
+  chart:   ["#7C3AED", "#3B82F6", "#F97316", "#10B981", "#EC4899"],
+};
+
+// ── Types ───────────────────────────────────────────────────────
 interface Run {
-  run_id: string;
-  status: string;
-  operator_id: string;
-  started_at: string | null;
-  completed_at: string | null;
+  run_id: string; status: string; operator_id: string;
+  started_at: string | null; completed_at: string | null;
   parameters?: { summary?: Record<string, number> };
 }
-
 interface ReconResult {
-  result_id: string;
-  status: string;
-  eft_transaction_id: string | null;
-  reported_id: string | null;
-  match_method: string | null;
-  variance_amount: number | null;
+  result_id: string; status: string;
+  eft_transaction_id: string | null; reported_id: string | null;
+  match_method: string | null; variance_amount: number | null;
   detail: Record<string, unknown>;
 }
-
 interface Finding {
-  finding_id: string;
-  rule_code: string;
-  rule_version: number;
-  severity: string;
-  transaction_id: string | null;
-  detail: Record<string, unknown>;
-  created_at: string;
+  finding_id: string; rule_code: string; rule_version: number;
+  severity: string; transaction_id: string | null;
+  detail: Record<string, unknown>; created_at: string;
 }
-
 interface ReperformResult {
-  result_id: string;
-  calculation_type: string;
-  status: string;
-  reported_value: number | null;
-  reperformed_value: number | null;
-  variance_absolute: number | null;
-  variance_pct: number | null;
+  result_id: string; calculation_type: string; status: string;
+  reported_value: number | null; reperformed_value: number | null;
+  variance_absolute: number | null; variance_pct: number | null;
   detail: Record<string, unknown>;
 }
-
 interface AuditEntry {
-  log_id: string;
-  event_type: string;
-  severity: string;
-  component: string;
-  operator_id: string | null;
-  message: string;
-  created_at: string;
+  log_id: string; event_type: string; severity: string;
+  component: string; operator_id: string | null;
+  message: string; created_at: string;
 }
 
-// ── Helpers ────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────
 async function apiFetch<T>(path: string): Promise<T> {
   const r = await fetch(API + path);
   if (!r.ok) throw new Error(`${r.status} ${path}`);
   return r.json();
 }
-
 function fmtDate(d: string | null) {
   if (!d) return "—";
   return new Date(d).toLocaleString("en-CA", { dateStyle: "medium", timeStyle: "short" });
 }
+function shortId(id: string) { return id.slice(0, 8) + "…"; }
 
-function fmtCad(n: number | null) {
-  if (n == null) return "—";
-  return "CAD " + Number(n).toLocaleString("en-CA", { minimumFractionDigits: 2 });
-}
-
-function SeverityBadge({ sev }: { sev: string }) {
-  const map: Record<string, string> = {
-    BREACH: "danger", WARN: "warning", INFO: "primary",
-    MATCHED: "success", MISSED: "danger", PHANTOM: "warning",
-    COMPLETED: "success", RUNNING: "info", FAILED: "danger", PENDING: "secondary",
-    PASS: "success", VARIANCE: "warning",
-  };
-  return (
-    <span
-      className={`badge bg-${map[sev] ?? "secondary"} bg-opacity-15 text-${map[sev] ?? "secondary"} border border-${map[sev] ?? "secondary"} border-opacity-25`}
-      style={{ fontWeight: 600, fontSize: "0.72rem" }}
-    >
-      {sev}
-    </span>
-  );
-}
-
-function MetricCard({ label, value, icon, color, sub }: {
-  label: string; value: string | number; icon: string; color: string; sub: string;
+// ── KPI Card ────────────────────────────────────────────────────
+function KpiCard({
+  label, value, sub, icon: Icon, gradient, trend,
+}: {
+  label: string; value: number; sub: string;
+  icon: React.ElementType; gradient: string[];
+  trend?: number;
 }) {
   return (
-    <div className="col">
-      <div className="card border-0 shadow-sm h-100" style={{ borderRadius: 12 }}>
-        <div className="card-body p-4">
-          <div className="d-flex align-items-center gap-2 mb-2">
-            <i className={`bi bi-${icon} text-${color}`} style={{ fontSize: "1rem" }} />
-            <span style={{ fontSize: "0.72rem", fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              {label}
-            </span>
-          </div>
-          <div style={{ fontSize: "2rem", fontWeight: 700, color: color === "danger" ? "#dc2626" : color === "warning" ? "#d97706" : color === "success" ? "#16a34a" : "#2563eb" }}>
-            {value}
-          </div>
-          <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: 2 }}>{sub}</div>
+    <div
+      className="rounded-2xl p-5 flex flex-col gap-3 shadow-lg"
+      style={{ background: `linear-gradient(135deg, ${gradient[0]}, ${gradient[1]})`, color: "#fff" }}
+    >
+      <div className="flex items-start justify-between">
+        <div>
+          <p className="text-sm font-medium opacity-80 uppercase tracking-wide">{label}</p>
+          <p className="text-4xl font-bold mt-1">{value}</p>
+        </div>
+        <div className="w-11 h-11 rounded-xl flex items-center justify-center"
+          style={{ background: "rgba(255,255,255,0.2)" }}>
+          <Icon size={22} />
         </div>
       </div>
+      <div className="flex items-center gap-2 text-sm opacity-80">
+        {trend !== undefined ? (
+          <>
+            {trend >= 0
+              ? <TrendingUp size={14} />
+              : <TrendingDown size={14} />}
+            <span>{sub}</span>
+          </>
+        ) : (
+          <span>{sub}</span>
+        )}
+      </div>
     </div>
   );
 }
 
-function TableCard({ title, controls, children }: {
-  title: string; controls?: React.ReactNode; children: React.ReactNode;
+// ── Panel wrapper ────────────────────────────────────────────────
+function Panel({ title, children, className = "" }: {
+  title: string; children: React.ReactNode; className?: string;
 }) {
   return (
-    <div className="card border-0 shadow-sm mb-4" style={{ borderRadius: 12, overflow: "hidden" }}>
-      <div className="card-header bg-white border-bottom d-flex align-items-center justify-content-between py-3 px-4">
-        <span style={{ fontWeight: 600, fontSize: "0.9rem", color: "#334155" }}>{title}</span>
-        {controls && <div className="d-flex gap-2">{controls}</div>}
+    <div
+      className={`rounded-2xl shadow-sm border ${className}`}
+      style={{ background: C.surface, borderColor: C.border }}
+    >
+      <div className="px-6 py-4 border-b" style={{ borderColor: C.border }}>
+        <h3 className="font-semibold text-sm" style={{ color: C.text }}>{title}</h3>
       </div>
-      <div style={{ overflowX: "auto" }}>
-        <table className="table table-hover mb-0" style={{ fontSize: "0.82rem" }}>
-          {children}
-        </table>
-      </div>
+      <div className="p-6">{children}</div>
     </div>
   );
 }
 
-function EmptyRow({ cols, message }: { cols: number; message: string }) {
-  return (
-    <tr><td colSpan={cols} className="text-center py-5 text-muted">{message}</td></tr>
-  );
-}
-
-function LoadingRow({ cols }: { cols: number }) {
-  return (
-    <tr><td colSpan={cols} className="text-center py-5">
-      <div className="spinner-border spinner-border-sm text-primary" />
-    </td></tr>
-  );
-}
-
-// ── Upload Modal ─────────────────────────────────────────────
-const PIPELINE_STEPS = [
-  { label: "Uploading files", icon: "cloud-upload" },
-  { label: "Ingesting EFT transactions", icon: "table" },
-  { label: "Running reconciliation", icon: "arrow-left-right" },
-  { label: "Evaluating FINTRAC rules", icon: "shield-check" },
-  { label: "Generating compliance report", icon: "file-earmark-text" },
+// ── Upload Modal ─────────────────────────────────────────────────
+const STEPS = [
+  "Uploading files", "Ingesting EFT data",
+  "Running reconciliation", "Evaluating FINTRAC rules", "Generating report",
 ];
 
 function UploadModal({
-  onClose,
-  onRunCreated,
+  onClose, onRunCreated,
 }: {
   onClose: () => void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -181,42 +147,38 @@ function UploadModal({
   const [phase, setPhase] = useState<"form" | "running" | "done" | "error">("form");
   const [stepIndex, setStepIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
-  const [runId, setRunId] = useState("");
   const stepRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const eftInputRef = useRef<HTMLInputElement>(null);
-  const repInputRef = useRef<HTMLInputElement>(null);
+  const eftRef = useRef<HTMLInputElement>(null);
+  const repRef = useRef<HTMLInputElement>(null);
 
-  // Advance step animation while running
   useEffect(() => {
     if (phase === "running") {
       stepRef.current = setInterval(() => {
-        setStepIndex(i => Math.min(i + 1, PIPELINE_STEPS.length - 1));
-      }, 3500);
+        setStepIndex(i => Math.min(i + 1, STEPS.length - 1));
+      }, 3000);
     }
     return () => { if (stepRef.current) clearInterval(stepRef.current); };
   }, [phase]);
 
   async function handleSubmit() {
     if (!eftFile || !repFile || !operatorId.trim()) return;
-    setPhase("running");
-    setStepIndex(0);
+    setPhase("running"); setStepIndex(0);
     const fd = new FormData();
     fd.append("eft_file", eftFile);
     fd.append("reported_file", repFile);
     fd.append("operator_id", operatorId.trim());
     try {
-      // Pipeline runs synchronously on the server — this fetch blocks until complete
       const res = await fetch(`${API}/runs/upload`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      setStepIndex(PIPELINE_STEPS.length);
-      setRunId(data.run_id);
-      setPhase(data.status === "FAILED" ? "error" : "done");
+      if (stepRef.current) clearInterval(stepRef.current);
+      setStepIndex(STEPS.length);
       if (data.status === "FAILED") {
-        setErrorMsg(data.error ?? "Pipeline failed — check run details.");
-        return;
+        setErrorMsg(data.error ?? "Pipeline failed.");
+        setPhase("error"); return;
       }
       onRunCreated(data);
+      setPhase("done");
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : "Upload failed");
       setPhase("error");
@@ -225,223 +187,141 @@ function UploadModal({
     }
   }
 
-  function handleDone() {
-    onClose();
-  }
-
   const dropZone = (
-    label: string,
-    sublabel: string,
-    file: File | null,
-    setFile: (f: File) => void,
-    drag: boolean,
-    setDrag: (v: boolean) => void,
-    inputRef: React.RefObject<HTMLInputElement>
+    label: string, file: File | null,
+    setFile: (f: File) => void, drag: boolean,
+    setDrag: (v: boolean) => void, ref: React.RefObject<HTMLInputElement>
   ) => (
     <div
-      onClick={() => inputRef.current?.click()}
+      onClick={() => ref.current?.click()}
       onDragOver={e => { e.preventDefault(); setDrag(true); }}
       onDragLeave={() => setDrag(false)}
-      onDrop={e => {
-        e.preventDefault(); setDrag(false);
-        const f = e.dataTransfer.files[0];
-        if (f) setFile(f);
-      }}
+      onDrop={e => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files[0]; if (f) setFile(f); }}
+      className="rounded-xl border-2 border-dashed p-6 text-center cursor-pointer transition-colors"
       style={{
-        border: `2px dashed ${drag ? "#2563eb" : file ? "#16a34a" : "#cbd5e1"}`,
-        borderRadius: 12,
-        padding: "28px 20px",
-        cursor: "pointer",
-        background: drag ? "#eff6ff" : file ? "#f0fdf4" : "#f8fafc",
-        transition: "all 0.2s",
-        textAlign: "center",
-        flex: 1,
+        borderColor: drag ? C.chart[0] : C.border,
+        background: drag ? "rgba(124,58,237,0.05)" : "#F8FAFC",
       }}
     >
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".csv,.xlsx"
-        style={{ display: "none" }}
-        onChange={e => { const f = e.target.files?.[0]; if (f) setFile(f); }}
-      />
-      <i
-        className={`bi bi-${file ? "check-circle-fill" : "cloud-upload"}`}
-        style={{ fontSize: "2rem", color: file ? "#16a34a" : drag ? "#2563eb" : "#94a3b8" }}
-      />
-      <div style={{ fontWeight: 600, fontSize: "0.875rem", marginTop: 10, color: file ? "#16a34a" : "#334155" }}>
-        {file ? file.name : label}
-      </div>
-      <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: 4 }}>
-        {file ? `${(file.size / 1024).toFixed(1)} KB` : sublabel}
-      </div>
+      <input ref={ref} type="file" accept=".csv,.xlsx" className="hidden"
+        onChange={e => { const f = e.target.files?.[0]; if (f) setFile(f); }} />
+      <Upload size={24} className="mx-auto mb-2" style={{ color: file ? C.matched[0] : C.muted }} />
+      <p className="text-sm font-medium" style={{ color: C.text }}>{label}</p>
+      {file
+        ? <p className="text-xs mt-1 font-semibold" style={{ color: C.matched[0] }}>{file.name}</p>
+        : <p className="text-xs mt-1" style={{ color: C.muted }}>Drag & drop or click to browse</p>}
     </div>
   );
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-      {/* Backdrop */}
-      <div
-        onClick={phase === "form" ? onClose : undefined}
-        style={{ position: "absolute", inset: 0, background: "rgba(15,23,42,0.55)", backdropFilter: "blur(4px)" }}
-      />
-
-      {/* Modal */}
-      <div style={{
-        position: "relative", width: "100%", maxWidth: 680,
-        background: "#fff", borderRadius: 16, boxShadow: "0 24px 64px rgba(0,0,0,0.18)",
-        overflow: "hidden", margin: "0 16px",
-      }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(15,10,30,0.6)", backdropFilter: "blur(4px)" }}>
+      <div className="w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden"
+        style={{ background: C.surface }}>
         {/* Header */}
-        <div style={{ background: "linear-gradient(135deg, #1a3a5c 0%, #2563eb 100%)", padding: "24px 28px", color: "#fff" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div>
-              <div style={{ fontSize: "1.125rem", fontWeight: 700 }}>
-                <i className="bi bi-play-circle me-2" />New Compliance Analysis Run
-              </div>
-              <div style={{ fontSize: "0.8rem", opacity: 0.75, marginTop: 4 }}>
-                Upload your EFT and EFTR datasets — the full FINTRAC validation pipeline will run automatically
-              </div>
-            </div>
-            {phase === "form" && (
-              <button onClick={onClose} style={{ background: "rgba(255,255,255,0.15)", border: "none", borderRadius: 8, color: "#fff", width: 32, height: 32, cursor: "pointer", fontSize: "1rem" }}>
-                <i className="bi bi-x" />
-              </button>
-            )}
+        <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: C.border }}>
+          <div>
+            <h2 className="font-bold text-lg" style={{ color: C.text }}>Upload & Run Analysis</h2>
+            <p className="text-xs mt-0.5" style={{ color: C.muted }}>EFT + Reported CSV files required</p>
           </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 hover:bg-gray-100 transition-colors">
+            <X size={18} style={{ color: C.muted }} />
+          </button>
         </div>
 
-        <div style={{ padding: "28px" }}>
-          {/* ── FORM ── */}
+        <div className="p-6">
           {phase === "form" && (
-            <>
-              <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
-                {dropZone(
-                  "Drop EFT Transactions CSV",
-                  "Click or drag & drop (.csv or .xlsx)",
-                  eftFile, setEftFile, eftDrag, setEftDrag, eftInputRef
-                )}
-                {dropZone(
-                  "Drop Filed Reports (EFTR) CSV",
-                  "Click or drag & drop (.csv or .xlsx)",
-                  repFile, setRepFile, repDrag, setRepDrag, repInputRef
-                )}
+            <div className="flex flex-col gap-4">
+              <div className="grid grid-cols-2 gap-3">
+                {dropZone("EFT Transactions CSV", eftFile, setEftFile, eftDrag, setEftDrag, eftRef)}
+                {dropZone("Reported Transactions CSV", repFile, setRepFile, repDrag, setRepDrag, repRef)}
               </div>
-
-              <div style={{ marginBottom: 24 }}>
-                <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "#475569", display: "block", marginBottom: 6 }}>
-                  Operator ID <span style={{ color: "#dc2626" }}>*</span>
+              <div>
+                <label className="block text-xs font-medium mb-1.5" style={{ color: C.muted }}>
+                  OPERATOR ID
                 </label>
                 <input
-                  type="text"
-                  className="form-control"
-                  placeholder="e.g. john.doe"
-                  value={operatorId}
-                  onChange={e => setOperatorId(e.target.value)}
-                  style={{ borderRadius: 8, fontSize: "0.875rem" }}
+                  value={operatorId} onChange={e => setOperatorId(e.target.value)}
+                  placeholder="e.g. john.doe@bank.com"
+                  className="w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-2"
+                  style={{ borderColor: C.border, color: C.text,
+                    focusRingColor: C.chart[0] } as React.CSSProperties}
                 />
               </div>
-
               <button
                 onClick={handleSubmit}
                 disabled={!eftFile || !repFile || !operatorId.trim()}
+                className="w-full rounded-xl py-3 text-sm font-semibold text-white transition-opacity"
                 style={{
-                  width: "100%", padding: "14px", borderRadius: 10, border: "none",
-                  background: (!eftFile || !repFile || !operatorId.trim()) ? "#e2e8f0" : "linear-gradient(135deg, #1a3a5c 0%, #2563eb 100%)",
-                  color: (!eftFile || !repFile || !operatorId.trim()) ? "#94a3b8" : "#fff",
-                  fontWeight: 700, fontSize: "0.95rem", cursor: (!eftFile || !repFile || !operatorId.trim()) ? "not-allowed" : "pointer",
-                  transition: "all 0.2s",
+                  background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})`,
+                  opacity: (!eftFile || !repFile || !operatorId.trim()) ? 0.5 : 1,
                 }}
               >
-                <i className="bi bi-play-fill me-2" />Run FINTRAC Compliance Analysis
+                Run Compliance Analysis
               </button>
+            </div>
+          )}
 
-              <p style={{ fontSize: "0.72rem", color: "#94a3b8", textAlign: "center", marginTop: 12, marginBottom: 0 }}>
-                Pipeline runs in background — ingest → reconcile → rule checks → Excel report
+          {phase === "running" && (
+            <div className="py-4">
+              <p className="text-sm font-semibold mb-6 text-center" style={{ color: C.text }}>
+                Pipeline running — please wait…
               </p>
-            </>
-          )}
-
-          {/* ── RUNNING ── */}
-          {(phase === "running" || phase === "done") && (
-            <>
-              <div style={{ marginBottom: 24 }}>
-                {PIPELINE_STEPS.map((step, i) => {
-                  const done = i < stepIndex;
-                  const active = i === stepIndex && phase === "running";
-                  const pending = i > stepIndex;
-                  return (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 0", borderBottom: i < PIPELINE_STEPS.length - 1 ? "1px solid #f1f5f9" : "none" }}>
-                      <div style={{
-                        width: 36, height: 36, borderRadius: "50%", flexShrink: 0,
-                        display: "flex", alignItems: "center", justifyContent: "center",
-                        background: done ? "#dcfce7" : active ? "#dbeafe" : "#f1f5f9",
-                        border: `2px solid ${done ? "#16a34a" : active ? "#2563eb" : "#e2e8f0"}`,
-                        transition: "all 0.4s",
+              <div className="flex flex-col gap-3">
+                {STEPS.map((s, i) => (
+                  <div key={s} className="flex items-center gap-3">
+                    <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold"
+                      style={{
+                        background: i < stepIndex ? C.matched[0]
+                          : i === stepIndex ? C.chart[0] : C.border,
+                        color: i <= stepIndex ? "#fff" : C.muted,
                       }}>
-                        {done
-                          ? <i className="bi bi-check-lg" style={{ color: "#16a34a", fontSize: "0.9rem" }} />
-                          : active
-                          ? <div className="spinner-border spinner-border-sm" style={{ color: "#2563eb", width: 16, height: 16, borderWidth: 2 }} />
-                          : <i className={`bi bi-${step.icon}`} style={{ color: "#94a3b8", fontSize: "0.85rem" }} />
-                        }
-                      </div>
-                      <div>
-                        <div style={{ fontSize: "0.875rem", fontWeight: active ? 600 : done ? 500 : 400, color: active ? "#1e40af" : done ? "#16a34a" : "#94a3b8" }}>
-                          {step.label}
-                          {done && <span style={{ marginLeft: 8, fontSize: "0.72rem", color: "#86efac" }}>complete</span>}
-                        </div>
-                      </div>
+                      {i < stepIndex ? "✓" : i + 1}
                     </div>
-                  );
-                })}
-              </div>
-
-              {phase === "done" && (
-                <div>
-                  <div className="alert alert-success d-flex align-items-center gap-3 mb-4" style={{ borderRadius: 10 }}>
-                    <i className="bi bi-check-circle-fill fs-5" />
-                    <div>
-                      <strong>Analysis complete!</strong>
-                      <div style={{ fontSize: "0.8rem" }}>Run ID: <code>{runId}</code></div>
-                    </div>
+                    <span className="text-sm" style={{
+                      color: i <= stepIndex ? C.text : C.muted,
+                      fontWeight: i === stepIndex ? 600 : 400,
+                    }}>{s}</span>
+                    {i === stepIndex && (
+                      <div className="ml-auto w-4 h-4 rounded-full border-2 border-t-transparent animate-spin"
+                        style={{ borderColor: C.chart[0], borderTopColor: "transparent" }} />
+                    )}
                   </div>
-                  <button
-                    onClick={handleDone}
-                    style={{ width: "100%", padding: "12px", borderRadius: 10, border: "none", background: "linear-gradient(135deg, #1a3a5c 0%, #2563eb 100%)", color: "#fff", fontWeight: 700, cursor: "pointer" }}
-                  >
-                    <i className="bi bi-bar-chart-line me-2" />View Results
-                  </button>
-                </div>
-              )}
-
-              {phase === "running" && (
-                <div style={{ fontSize: "0.78rem", color: "#94a3b8", textAlign: "center" }}>
-                  Processing in background — this may take a few seconds…
-                </div>
-              )}
-            </>
+                ))}
+              </div>
+            </div>
           )}
 
-          {/* ── ERROR ── */}
+          {phase === "done" && (
+            <div className="py-6 text-center">
+              <div className="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center"
+                style={{ background: `linear-gradient(135deg, ${C.matched[0]}, ${C.matched[1]})` }}>
+                <CheckCircle2 size={32} className="text-white" />
+              </div>
+              <h3 className="font-bold text-lg mb-1" style={{ color: C.text }}>Analysis Complete</h3>
+              <p className="text-sm mb-6" style={{ color: C.muted }}>Results loaded in the dashboard</p>
+              <button onClick={onClose}
+                className="px-6 py-2.5 rounded-xl text-sm font-semibold text-white"
+                style={{ background: `linear-gradient(135deg, ${C.matched[0]}, ${C.matched[1]})` }}>
+                View Results
+              </button>
+            </div>
+          )}
+
           {phase === "error" && (
-            <>
-              <div className="alert alert-danger d-flex align-items-center gap-3 mb-4" style={{ borderRadius: 10 }}>
-                <i className="bi bi-exclamation-triangle-fill fs-5" />
-                <div>
-                  <strong>Pipeline failed</strong>
-                  <div style={{ fontSize: "0.8rem" }}>{errorMsg}</div>
-                </div>
+            <div className="py-6 text-center">
+              <div className="w-16 h-16 rounded-full mx-auto mb-4 flex items-center justify-center"
+                style={{ background: `linear-gradient(135deg, ${C.breach[0]}, ${C.breach[1]})` }}>
+                <AlertTriangle size={32} className="text-white" />
               </div>
-              <div style={{ display: "flex", gap: 12 }}>
-                <button onClick={() => { setPhase("form"); setErrorMsg(""); }} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", fontWeight: 600 }}>
-                  Try Again
-                </button>
-                <button onClick={onClose} style={{ flex: 1, padding: "12px", borderRadius: 10, border: "none", background: "#f1f5f9", cursor: "pointer", fontWeight: 600 }}>
-                  Close
-                </button>
-              </div>
-            </>
+              <h3 className="font-bold text-lg mb-1" style={{ color: C.text }}>Analysis Failed</h3>
+              <p className="text-sm mb-4 max-w-xs mx-auto" style={{ color: C.muted }}>{errorMsg}</p>
+              <button onClick={() => setPhase("form")}
+                className="px-6 py-2.5 rounded-xl text-sm font-semibold text-white"
+                style={{ background: `linear-gradient(135deg, ${C.breach[0]}, ${C.breach[1]})` }}>
+                Try Again
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -449,9 +329,10 @@ function UploadModal({
   );
 }
 
-// ── Main Component ──────────────────────────────────────────────
+// ── Main Dashboard ───────────────────────────────────────────────
 export default function Dashboard() {
   const [page, setPage] = useState("overview");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [apiOnline, setApiOnline] = useState(false);
   const [runs, setRuns] = useState<Run[]>([]);
   const [runId, setRunId] = useState("");
@@ -462,43 +343,27 @@ export default function Dashboard() {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
-  // When set to true, the next runId useEffect fires but skips API calls
-  // because data was already loaded from the inline upload response.
-  const skipNextFetch = useRef(false);
-
-  // Filters
   const [missedFilter, setMissedFilter] = useState("");
   const [findingSevFilter, setFindingSevFilter] = useState("");
-  const [findingRuleFilter, setFindingRuleFilter] = useState("");
-  const [reperformTypeFilter, setReperformTypeFilter] = useState("");
-  const [reperformStatusFilter, setReperformStatusFilter] = useState("");
-  const [auditSevFilter, setAuditSevFilter] = useState("");
+  const skipNextFetch = useRef(false);
 
   async function loadRuns() {
-    try {
-      const data = await apiFetch<Run[]>("/runs");
-      setRuns(data);
-      return data;
-    } catch { return []; }
+    try { const d = await apiFetch<Run[]>("/runs"); setRuns(d); return d; }
+    catch { return []; }
   }
 
-  // Init
   useEffect(() => {
     (async () => {
       try { await apiFetch("/health"); setApiOnline(true); } catch { setApiOnline(false); }
-      const data = await loadRuns();
-      if (data.length) setRunId(data[0].run_id);
+      const d = await loadRuns();
+      if (d.length) setRunId(d[0].run_id);
+      setLoading(false);
     })();
   }, []);
 
-  // Load run data when runId changes
   useEffect(() => {
     if (!runId) return;
-    // Skip API calls if data was already loaded from the inline upload response
-    if (skipNextFetch.current) {
-      skipNextFetch.current = false;
-      return;
-    }
+    if (skipNextFetch.current) { skipNextFetch.current = false; return; }
     setLoading(true);
     Promise.all([
       apiFetch<Run>(`/runs/${runId}`),
@@ -516,438 +381,538 @@ export default function Dashboard() {
   }, [runId]);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function handleRunCreated(uploadResult: any) {
-    // Results are returned inline from the upload response — no follow-up
-    // API calls needed (Vercel multi-instance: each instance has its own /tmp DB).
-    const newRunId = uploadResult.run_id;
-    const runEntry: Run = uploadResult.run ?? {
-      run_id: newRunId, status: uploadResult.status,
-      operator_id: "", started_at: null, completed_at: null,
-    };
-    setRuns(prev => [runEntry, ...prev.filter(r => r.run_id !== newRunId)]);
+  function handleRunCreated(data: any) {
+    const entry: Run = data.run ?? { run_id: data.run_id, status: data.status, operator_id: "", started_at: null, completed_at: null };
+    setRuns(prev => [entry, ...prev.filter(r => r.run_id !== data.run_id)]);
     skipNextFetch.current = true;
-    setRunId(newRunId);
-    setRunDetail(runEntry);
-    setRecon(uploadResult.reconciliation ?? []);
-    setFindings(uploadResult.findings ?? []);
-    setAudit(uploadResult.audit_log ?? []);
+    setRunId(data.run_id);
+    setRunDetail(entry);
+    setRecon(data.reconciliation ?? []);
+    setFindings(data.findings ?? []);
+    setAudit(data.audit_log ?? []);
     setReperform([]);
     setLoading(false);
     setPage("overview");
   }
 
-  // Derived counts
+  // ── Derived data for charts ────────────────────────────────────
   const breachCount = findings.filter(f => f.severity === "BREACH").length;
-  const warnCount = findings.filter(f => f.severity === "WARN").length;
-  const infoCount = findings.filter(f => f.severity === "INFO").length;
+  const warnCount   = findings.filter(f => f.severity === "WARN").length;
+  const infoCount   = findings.filter(f => f.severity === "INFO").length;
   const matchedCount = recon.filter(r => r.status === "MATCHED").length;
-  const missedCount = recon.filter(r => r.status === "MISSED").length;
+  const missedCount  = recon.filter(r => r.status === "MISSED").length;
   const phantomCount = recon.filter(r => r.status === "PHANTOM").length;
 
-  // Chart data
-  const severityChartData = {
-    labels: ["BREACH", "WARN", "INFO"],
-    datasets: [{ data: [breachCount, warnCount, infoCount], backgroundColor: ["#dc2626", "#d97706", "#2563eb"], borderWidth: 2, borderColor: "#fff" }],
-  };
+  const severityPie = [
+    { name: "BREACH", value: breachCount, color: C.breach[0] },
+    { name: "WARN",   value: warnCount,   color: C.warn[0] },
+    { name: "INFO",   value: infoCount,   color: C.chart[1] },
+  ].filter(d => d.value > 0);
 
-  const ruleGroups: Record<string, { count: number; color: string }> = {};
+  const reconPie = [
+    { name: "MATCHED", value: matchedCount, color: C.matched[0] },
+    { name: "MISSED",  value: missedCount,  color: C.breach[0] },
+    { name: "PHANTOM", value: phantomCount, color: C.warn[0] },
+  ].filter(d => d.value > 0);
+
+  const ruleBar: Record<string, number> = {};
   findings.forEach(f => {
-    const key = f.rule_code.replace("FINTRAC_", "");
-    if (!ruleGroups[key]) ruleGroups[key] = { count: 0, color: f.severity === "BREACH" ? "#dc2626" : f.severity === "WARN" ? "#d97706" : "#2563eb" };
-    ruleGroups[key].count++;
+    const k = f.rule_code.replace("FINTRAC_", "");
+    ruleBar[k] = (ruleBar[k] ?? 0) + 1;
   });
-  const rulesChartData = {
-    labels: Object.keys(ruleGroups),
-    datasets: [{ label: "Findings", data: Object.values(ruleGroups).map(v => v.count), backgroundColor: Object.values(ruleGroups).map(v => v.color), borderRadius: 6, borderSkipped: false as const }],
-  };
+  const ruleChartData = Object.entries(ruleBar)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count], i) => ({ name, count, fill: C.chart[i % C.chart.length] }));
 
-  // Filtered data
-  const filteredMissed = recon.filter(r => r.status !== "MATCHED" && (!missedFilter || r.status === missedFilter));
-  const filteredFindings = findings.filter(f => (!findingSevFilter || f.severity === findingSevFilter) && (!findingRuleFilter || f.rule_code === findingRuleFilter));
-  const filteredReperform = reperform.filter(r => (!reperformTypeFilter || r.calculation_type === reperformTypeFilter) && (!reperformStatusFilter || r.status === reperformStatusFilter));
-  const filteredAudit = audit.filter(e => !auditSevFilter || e.severity === auditSevFilter);
-  const uniqueRuleCodes = Array.from(new Set(findings.map(f => f.rule_code))).sort();
-
-  const sidebarItems = [
-    { id: "overview", icon: "grid-1x2", label: "Overview" },
-    { id: "missed", icon: "exclamation-triangle", label: "Missed Transactions" },
-    { id: "findings", icon: "flag", label: "Rule Findings" },
-    { id: "reperformance", icon: "calculator", label: "Reperformance" },
-    { id: "audit", icon: "journal-text", label: "Audit Log" },
+  // ── Sidebar nav items ──────────────────────────────────────────
+  const navItems = [
+    { id: "overview",  icon: LayoutDashboard, label: "Overview" },
+    { id: "missed",    icon: FileX,           label: "Missed Reports" },
+    { id: "findings",  icon: ShieldAlert,     label: "Rule Findings" },
+    { id: "reperform", icon: Scale,           label: "Reperformance" },
+    { id: "audit",     icon: ScrollText,      label: "Audit Log" },
   ];
 
-  const pageTitles: Record<string, string> = {
-    overview: "Overview", missed: "Missed Transactions", findings: "Rule Findings",
-    reperformance: "Reperformance Results", audit: "Audit Log",
-  };
-
-  const filterSelect = (value: string, onChange: (v: string) => void, options: { value: string; label: string }[]) => (
-    <select className="form-select form-select-sm" style={{ fontSize: "0.78rem" }} value={value} onChange={e => onChange(e.target.value)}>
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
+  // ── Filtered data ──────────────────────────────────────────────
+  const filteredMissed = recon.filter(r =>
+    r.status === "MISSED" &&
+    (!missedFilter || (r.eft_transaction_id ?? "").toLowerCase().includes(missedFilter.toLowerCase()))
+  );
+  const filteredFindings = findings.filter(f =>
+    (!findingSevFilter || f.severity === findingSevFilter)
   );
 
-  return (
-    <div style={{ display: "flex", minHeight: "100vh" }}>
+  // ── Tooltip ────────────────────────────────────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const CustomTooltip = ({ active, payload, label }: any) => {
+    if (!active || !payload?.length) return null;
+    return (
+      <div className="rounded-xl px-3 py-2 shadow-lg text-xs"
+        style={{ background: C.text, color: "#fff" }}>
+        <p className="font-semibold mb-1">{label ?? payload[0]?.name}</p>
+        {payload.map((p: { name: string; value: number; color: string }, i: number) => (
+          <p key={i} style={{ color: p.color ?? "#fff" }}>{p.name}: <strong>{p.value}</strong></p>
+        ))}
+      </div>
+    );
+  };
 
-      {/* Upload Modal */}
+  // ── Severity badge ─────────────────────────────────────────────
+  function SevBadge({ sev }: { sev: string }) {
+    const cfg: Record<string, { bg: string; text: string }> = {
+      BREACH:  { bg: "#FEE2E2", text: "#B91C1C" },
+      WARN:    { bg: "#FFEDD5", text: "#C2410C" },
+      INFO:    { bg: "#DBEAFE", text: "#1D4ED8" },
+      MATCHED: { bg: "#D1FAE5", text: "#047857" },
+      MISSED:  { bg: "#FEE2E2", text: "#B91C1C" },
+      PHANTOM: { bg: "#FEF3C7", text: "#B45309" },
+      COMPLETED: { bg: "#D1FAE5", text: "#047857" },
+      FAILED:  { bg: "#FEE2E2", text: "#B91C1C" },
+      RUNNING: { bg: "#DBEAFE", text: "#1D4ED8" },
+      PENDING: { bg: "#F1F5F9", text: "#475569" },
+    };
+    const s = cfg[sev] ?? { bg: "#F1F5F9", text: "#475569" };
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold"
+        style={{ background: s.bg, color: s.text }}>
+        {sev}
+      </span>
+    );
+  }
+
+  // ── Table wrapper ──────────────────────────────────────────────
+  function TablePanel({ title, controls, children }: {
+    title: string; controls?: React.ReactNode; children: React.ReactNode;
+  }) {
+    return (
+      <div className="rounded-2xl shadow-sm border overflow-hidden"
+        style={{ background: C.surface, borderColor: C.border }}>
+        <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: C.border }}>
+          <h3 className="font-semibold text-sm" style={{ color: C.text }}>{title}</h3>
+          {controls && <div className="flex gap-2">{controls}</div>}
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="w-full text-sm">
+            {children}
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  function Th({ children }: { children: React.ReactNode }) {
+    return (
+      <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide"
+        style={{ color: C.muted, background: "#F8FAFC", borderBottom: `1px solid ${C.border}` }}>
+        {children}
+      </th>
+    );
+  }
+  function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+    return (
+      <td className={`px-4 py-3 border-b text-sm ${className}`}
+        style={{ color: C.text, borderColor: C.border }}>
+        {children}
+      </td>
+    );
+  }
+  function EmptyRow({ cols, msg }: { cols: number; msg: string }) {
+    return (
+      <tr><td colSpan={cols} className="text-center py-10 text-sm" style={{ color: C.muted }}>{msg}</td></tr>
+    );
+  }
+
+  // ── SIDEBAR ────────────────────────────────────────────────────
+  const sidebar = (
+    <aside
+      className="fixed left-0 top-0 h-screen z-30 flex flex-col transition-all duration-300"
+      style={{
+        width: sidebarOpen ? 240 : 72,
+        background: C.text,
+        borderRight: `1px solid rgba(255,255,255,0.1)`,
+      }}
+    >
+      {/* Logo */}
+      <div className="flex items-center gap-3 px-4 h-16 border-b" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0"
+          style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})`, color: "#fff" }}>
+          EF
+        </div>
+        {sidebarOpen && (
+          <div>
+            <p className="text-white font-bold text-sm leading-tight">EFTR</p>
+            <p className="text-xs leading-tight" style={{ color: "rgba(255,255,255,0.5)" }}>Compliance</p>
+          </div>
+        )}
+      </div>
+
+      {/* Nav */}
+      <nav className="flex-1 py-4 flex flex-col gap-1 px-2">
+        {navItems.map(item => {
+          const active = page === item.id;
+          return (
+            <button key={item.id} onClick={() => setPage(item.id)}
+              className="flex items-center gap-3 rounded-xl px-3 py-2.5 w-full text-left transition-colors"
+              style={{
+                background: active ? "rgba(139,92,246,0.2)" : "transparent",
+                color: active ? C.missed[0] : "rgba(255,255,255,0.6)",
+              }}>
+              <item.icon size={18} className="flex-shrink-0" />
+              {sidebarOpen && <span className="text-sm font-medium">{item.label}</span>}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* API status */}
+      {sidebarOpen && (
+        <div className="px-4 py-4 border-t" style={{ borderColor: "rgba(255,255,255,0.1)" }}>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full flex-shrink-0"
+              style={{ background: apiOnline ? C.matched[0] : C.breach[0] }} />
+            <span className="text-xs" style={{ color: "rgba(255,255,255,0.5)" }}>
+              API {apiOnline ? "Connected" : "Offline"}
+            </span>
+          </div>
+        </div>
+      )}
+    </aside>
+  );
+
+  const contentOffset = sidebarOpen ? 240 : 72;
+
+  // ── HEADER ─────────────────────────────────────────────────────
+  const header = (
+    <header
+      className="fixed top-0 right-0 z-20 h-16 flex items-center justify-between px-6 border-b"
+      style={{
+        left: contentOffset, background: C.surface,
+        borderColor: C.border, transition: "left 300ms",
+      }}
+    >
+      <div className="flex items-center gap-3">
+        <button onClick={() => setSidebarOpen(v => !v)}
+          className="p-2 rounded-lg hover:bg-gray-100 transition-colors">
+          <Menu size={18} style={{ color: C.muted }} />
+        </button>
+        <div>
+          <h1 className="font-bold text-base" style={{ color: C.text }}>
+            {navItems.find(n => n.id === page)?.label ?? "Dashboard"}
+          </h1>
+          <p className="text-xs" style={{ color: C.muted }}>FINTRAC EFT Compliance Platform</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        {/* Run selector */}
+        {runs.length > 0 && (
+          <div className="relative flex items-center gap-2 rounded-xl border px-3 py-2 text-xs"
+            style={{ borderColor: C.border, color: C.muted }}>
+            <div className="w-2 h-2 rounded-full"
+              style={{ background: runDetail?.status === "COMPLETED" ? C.matched[0] : C.breach[0] }} />
+            <select
+              value={runId}
+              onChange={e => setRunId(e.target.value)}
+              className="bg-transparent outline-none text-xs pr-1 cursor-pointer"
+              style={{ color: C.text, maxWidth: 220 }}
+            >
+              {runs.map(r => (
+                <option key={r.run_id} value={r.run_id}>
+                  {shortId(r.run_id)} — {r.status} — {r.operator_id}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={12} />
+          </div>
+        )}
+        <button onClick={() => setShowUpload(true)}
+          className="flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-md transition-opacity hover:opacity-90"
+          style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
+          <Upload size={15} />
+          Upload & Run
+        </button>
+      </div>
+    </header>
+  );
+
+  // ── PAGE CONTENT ───────────────────────────────────────────────
+  const hasData = recon.length > 0 || findings.length > 0;
+
+  const overviewPage = (
+    <div className="flex flex-col gap-6">
+      {/* KPI Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard label="Breach Findings" value={breachCount} sub="Regulatory violations" icon={ShieldAlert} gradient={C.breach} />
+        <KpiCard label="Warnings" value={warnCount}   sub="Data quality gaps" icon={AlertTriangle} gradient={C.warn} />
+        <KpiCard label="Missed Reports" value={missedCount}  sub={`EFTs ≥ CAD $10,000 unreported`} icon={FileX} gradient={C.missed} />
+        <KpiCard label="Matched" value={matchedCount} sub="EFTs with confirmed EFTR" icon={CheckCircle2} gradient={C.matched} />
+      </div>
+
+      {/* Charts Row 1 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Reconciliation donut */}
+        <Panel title="Reconciliation Status">
+          {!hasData ? (
+            <div className="flex flex-col items-center justify-center py-12" style={{ color: C.muted }}>
+              <FileX size={36} className="mb-3 opacity-40" />
+              <p className="text-sm">No data — upload files to run analysis</p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-6">
+              <ResponsiveContainer width={180} height={180}>
+                <PieChart>
+                  <Pie data={reconPie} cx="50%" cy="50%" innerRadius={50} outerRadius={80}
+                    dataKey="value" paddingAngle={3}>
+                    {reconPie.map((e, i) => <Cell key={i} fill={e.color} />)}
+                  </Pie>
+                  <Tooltip content={<CustomTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex flex-col gap-3">
+                {reconPie.map(e => (
+                  <div key={e.name} className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: e.color }} />
+                    <span className="text-sm" style={{ color: C.muted }}>{e.name}</span>
+                    <span className="ml-auto font-bold text-sm" style={{ color: C.text }}>{e.value}</span>
+                  </div>
+                ))}
+                <div className="pt-2 border-t" style={{ borderColor: C.border }}>
+                  <span className="text-xs" style={{ color: C.muted }}>Total: {recon.length} transactions</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </Panel>
+
+        {/* Findings by severity donut */}
+        <Panel title="Findings by Severity">
+          {!hasData ? (
+            <div className="flex flex-col items-center justify-center py-12" style={{ color: C.muted }}>
+              <ShieldAlert size={36} className="mb-3 opacity-40" />
+              <p className="text-sm">No findings yet — run an analysis to see results</p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-6">
+              <ResponsiveContainer width={180} height={180}>
+                <PieChart>
+                  <Pie data={severityPie} cx="50%" cy="50%" innerRadius={50} outerRadius={80}
+                    dataKey="value" paddingAngle={3}>
+                    {severityPie.map((e, i) => <Cell key={i} fill={e.color} />)}
+                  </Pie>
+                  <Tooltip content={<CustomTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex flex-col gap-3">
+                {severityPie.map(e => (
+                  <div key={e.name} className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: e.color }} />
+                    <span className="text-sm" style={{ color: C.muted }}>{e.name}</span>
+                    <span className="ml-auto font-bold text-sm" style={{ color: C.text }}>{e.value}</span>
+                  </div>
+                ))}
+                <div className="pt-2 border-t" style={{ borderColor: C.border }}>
+                  <span className="text-xs" style={{ color: C.muted }}>Total: {findings.length} findings</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      {/* Rule findings bar chart */}
+      {ruleChartData.length > 0 && (
+        <Panel title="Findings by Rule Code">
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={ruleChartData} margin={{ top: 4, right: 16, left: -16, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: C.muted }}
+                angle={-20} textAnchor="end" interval={0} height={50} />
+              <YAxis tick={{ fontSize: 11, fill: C.muted }} allowDecimals={false} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                {ruleChartData.map((e, i) => <Cell key={i} fill={e.fill} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </Panel>
+      )}
+
+      {/* Run History */}
+      <TablePanel title="Run History">
+        <thead>
+          <tr>
+            <Th>Run ID</Th><Th>Status</Th><Th>Operator</Th>
+            <Th>Started</Th><Th>Completed</Th><Th>Summary</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.length === 0
+            ? <EmptyRow cols={6} msg="No runs yet — upload data to start" />
+            : runs.map(r => {
+              const s = r.parameters?.summary ?? {};
+              return (
+                <tr key={r.run_id} className="hover:bg-gray-50 cursor-pointer transition-colors"
+                  onClick={() => setRunId(r.run_id)}>
+                  <Td><span className="font-mono text-xs">{shortId(r.run_id)}</span></Td>
+                  <Td><SevBadge sev={r.status} /></Td>
+                  <Td>{r.operator_id}</Td>
+                  <Td>{fmtDate(r.started_at)}</Td>
+                  <Td>{fmtDate(r.completed_at)}</Td>
+                  <Td>
+                    {Object.keys(s).length > 0
+                      ? <span className="text-xs" style={{ color: C.muted }}>
+                          {s.matched ?? 0} matched · {s.missed ?? 0} missed · {s.breaches ?? 0} breaches
+                        </span>
+                      : "—"}
+                  </Td>
+                </tr>
+              );
+            })}
+        </tbody>
+      </TablePanel>
+    </div>
+  );
+
+  const missedPage = (
+    <TablePanel
+      title={`Missed Transactions (${filteredMissed.length})`}
+      controls={
+        <input value={missedFilter} onChange={e => setMissedFilter(e.target.value)}
+          placeholder="Filter by transaction ID…"
+          className="rounded-lg border px-3 py-1.5 text-xs outline-none"
+          style={{ borderColor: C.border, color: C.text, width: 220 }} />
+      }
+    >
+      <thead>
+        <tr><Th>EFT Transaction ID</Th><Th>Match Method</Th><Th>Variance</Th><Th>Detail</Th></tr>
+      </thead>
+      <tbody>
+        {loading
+          ? <tr><td colSpan={4} className="text-center py-10"><div className="inline-block w-6 h-6 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: C.chart[0], borderTopColor: "transparent" }} /></td></tr>
+          : filteredMissed.length === 0
+            ? <EmptyRow cols={4} msg="No missed transactions found" />
+            : filteredMissed.map(r => (
+              <tr key={r.result_id} className="hover:bg-gray-50 transition-colors">
+                <Td><span className="font-mono text-xs">{r.eft_transaction_id ?? "—"}</span></Td>
+                <Td>{r.match_method ?? "—"}</Td>
+                <Td>{r.variance_amount != null ? `CAD ${r.variance_amount.toFixed(2)}` : "—"}</Td>
+                <Td><span className="text-xs" style={{ color: C.muted }}>{JSON.stringify(r.detail)}</span></Td>
+              </tr>
+            ))}
+      </tbody>
+    </TablePanel>
+  );
+
+  const findingsPage = (
+    <TablePanel
+      title={`Rule Findings (${filteredFindings.length})`}
+      controls={
+        <select value={findingSevFilter} onChange={e => setFindingSevFilter(e.target.value)}
+          className="rounded-lg border px-3 py-1.5 text-xs outline-none"
+          style={{ borderColor: C.border, color: C.text }}>
+          <option value="">All severities</option>
+          <option value="BREACH">BREACH</option>
+          <option value="WARN">WARN</option>
+          <option value="INFO">INFO</option>
+        </select>
+      }
+    >
+      <thead>
+        <tr><Th>Severity</Th><Th>Rule</Th><Th>Transaction</Th><Th>Detail</Th><Th>Time</Th></tr>
+      </thead>
+      <tbody>
+        {loading
+          ? <tr><td colSpan={5} className="text-center py-10"><div className="inline-block w-6 h-6 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: C.chart[0], borderTopColor: "transparent" }} /></td></tr>
+          : filteredFindings.length === 0
+            ? <EmptyRow cols={5} msg="No findings for the selected filter" />
+            : filteredFindings.map(f => (
+              <tr key={f.finding_id} className="hover:bg-gray-50 transition-colors">
+                <Td><SevBadge sev={f.severity} /></Td>
+                <Td><span className="text-xs font-mono">{f.rule_code}</span></Td>
+                <Td><span className="text-xs font-mono">{f.transaction_id ?? "—"}</span></Td>
+                <Td>
+                  <span className="text-xs" style={{ color: C.muted }}>
+                    {(f.detail as { reason?: string })?.reason ?? JSON.stringify(f.detail).slice(0, 80)}
+                  </span>
+                </Td>
+                <Td><span className="text-xs">{fmtDate(f.created_at)}</span></Td>
+              </tr>
+            ))}
+      </tbody>
+    </TablePanel>
+  );
+
+  const reperformPage = (
+    <TablePanel title={`Reperformance Results (${reperform.length})`}>
+      <thead>
+        <tr><Th>Type</Th><Th>Status</Th><Th>Reported</Th><Th>Reperformed</Th><Th>Variance</Th><Th>Variance %</Th></tr>
+      </thead>
+      <tbody>
+        {reperform.length === 0
+          ? <EmptyRow cols={6} msg="No reperformance data for this run" />
+          : reperform.map(r => (
+            <tr key={r.result_id} className="hover:bg-gray-50 transition-colors">
+              <Td>{r.calculation_type}</Td>
+              <Td><SevBadge sev={r.status} /></Td>
+              <Td>{r.reported_value?.toFixed(2) ?? "—"}</Td>
+              <Td>{r.reperformed_value?.toFixed(2) ?? "—"}</Td>
+              <Td>{r.variance_absolute?.toFixed(2) ?? "—"}</Td>
+              <Td>{r.variance_pct != null ? `${(r.variance_pct * 100).toFixed(1)}%` : "—"}</Td>
+            </tr>
+          ))}
+      </tbody>
+    </TablePanel>
+  );
+
+  const auditPage = (
+    <TablePanel title={`Audit Log (${audit.length} entries)`}>
+      <thead>
+        <tr><Th>Severity</Th><Th>Component</Th><Th>Event</Th><Th>Message</Th><Th>Time</Th></tr>
+      </thead>
+      <tbody>
+        {audit.length === 0
+          ? <EmptyRow cols={5} msg="No audit entries for this run" />
+          : audit.map(e => (
+            <tr key={e.log_id} className="hover:bg-gray-50 transition-colors">
+              <Td><SevBadge sev={e.severity} /></Td>
+              <Td><span className="text-xs font-mono">{e.component}</span></Td>
+              <Td><span className="text-xs">{e.event_type}</span></Td>
+              <Td><span className="text-xs" style={{ color: C.muted }}>{e.message}</span></Td>
+              <Td><span className="text-xs">{fmtDate(e.created_at)}</span></Td>
+            </tr>
+          ))}
+      </tbody>
+    </TablePanel>
+  );
+
+  const pages: Record<string, React.ReactNode> = {
+    overview: overviewPage,
+    missed:   missedPage,
+    findings: findingsPage,
+    reperform: reperformPage,
+    audit:    auditPage,
+  };
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", fontFamily: "Inter, system-ui, sans-serif" }}>
+      {sidebar}
+      {header}
+
+      <main style={{
+        marginLeft: contentOffset, paddingTop: 64,
+        transition: "margin-left 300ms", minHeight: "100vh",
+      }}>
+        <div className="p-6">
+          {pages[page] ?? overviewPage}
+        </div>
+      </main>
+
       {showUpload && (
         <UploadModal
           onClose={() => setShowUpload(false)}
           onRunCreated={handleRunCreated}
         />
       )}
-
-      {/* ── Sidebar ── */}
-      <div style={{ width: 260, background: "#1a3a5c", color: "#fff", display: "flex", flexDirection: "column", position: "fixed", top: 0, left: 0, bottom: 0, zIndex: 100 }}>
-        <div style={{ padding: "24px 20px 16px", borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
-          <div style={{ fontWeight: 700, fontSize: "1rem" }}>
-            <i className="bi bi-shield-check me-2" />EFTR Platform
-          </div>
-          <div style={{ fontSize: "0.72rem", opacity: 0.6, marginTop: 4 }}>FINTRAC Regulatory Assurance</div>
-        </div>
-        <nav style={{ flex: 1, padding: "12px 0" }}>
-          {sidebarItems.map(item => (
-            <button key={item.id} onClick={() => setPage(item.id)}
-              style={{
-                display: "flex", alignItems: "center", gap: 10, width: "100%",
-                padding: "10px 20px", border: "none",
-                borderLeft: `3px solid ${page === item.id ? "#60a5fa" : "transparent"}`,
-                color: page === item.id ? "#fff" : "rgba(255,255,255,0.7)",
-                background: page === item.id ? "rgba(255,255,255,0.1)" : "transparent",
-                fontSize: "0.875rem", cursor: "pointer", textAlign: "left",
-              }}>
-              <i className={`bi bi-${item.icon}`} style={{ width: 18, textAlign: "center" }} />
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        {/* Sidebar upload button */}
-        <div style={{ padding: "16px 20px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
-          <button
-            onClick={() => setShowUpload(true)}
-            style={{
-              width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.2)",
-              background: "rgba(96,165,250,0.15)", color: "#93c5fd", fontWeight: 600, fontSize: "0.8rem",
-              cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-            }}
-          >
-            <i className="bi bi-cloud-upload" />New Analysis Run
-          </button>
-          <div style={{ padding: "10px 0 0", fontSize: "0.7rem", opacity: 0.4 }}>
-            EFTR AI Use Case &mdash; v1.0.0
-          </div>
-        </div>
-      </div>
-
-      {/* ── Main ── */}
-      <div style={{ marginLeft: 260, flex: 1 }}>
-
-        {/* Topbar */}
-        <div className="bg-white border-bottom d-flex align-items-center justify-content-between px-4 py-3" style={{ position: "sticky", top: 0, zIndex: 50 }}>
-          <h2 style={{ fontSize: "1.125rem", fontWeight: 600, margin: 0 }}>{pageTitles[page]}</h2>
-          <div className="d-flex align-items-center gap-3">
-            <button
-              onClick={() => setShowUpload(true)}
-              style={{
-                padding: "8px 18px", borderRadius: 8, border: "none",
-                background: "linear-gradient(135deg, #1a3a5c 0%, #2563eb 100%)",
-                color: "#fff", fontWeight: 600, fontSize: "0.82rem", cursor: "pointer",
-                display: "flex", alignItems: "center", gap: 6,
-              }}
-            >
-              <i className="bi bi-cloud-upload" />Upload & Run Analysis
-            </button>
-
-            <select className="form-select form-select-sm" style={{ fontSize: "0.8rem", maxWidth: 340 }}
-              value={runId} onChange={e => setRunId(e.target.value)}>
-              {!runs.length && <option value="">No runs — upload data to start</option>}
-              {runs.map(r => (
-                <option key={r.run_id} value={r.run_id}>
-                  {r.run_id.slice(0, 8)}… — {r.status} — {r.operator_id} — {fmtDate(r.started_at)}
-                </option>
-              ))}
-            </select>
-
-            <div className="d-flex align-items-center gap-2" style={{ fontSize: "0.75rem", whiteSpace: "nowrap" }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: apiOnline ? "#22c55e" : "#94a3b8", display: "inline-block" }} />
-              {apiOnline ? "API Connected" : "API Offline"}
-            </div>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="p-4">
-
-          {/* ── OVERVIEW ── */}
-          {page === "overview" && (
-            <>
-              {breachCount > 0 && (
-                <div className="alert border-danger bg-danger bg-opacity-10 d-flex gap-3 mb-4" style={{ borderRadius: 10 }}>
-                  <i className="bi bi-shield-exclamation text-danger fs-5 mt-1" />
-                  <div>
-                    <strong className="text-danger">FINTRAC Compliance Alert — {breachCount} Breach Finding{breachCount > 1 ? "s" : ""} Detected</strong>
-                    <p className="mb-0 small text-danger-emphasis">Immediate remediation required. Review Rule Findings and Missed Transactions for details.</p>
-                  </div>
-                </div>
-              )}
-
-              {!runs.length && (
-                <div
-                  style={{ border: "2px dashed #cbd5e1", borderRadius: 16, padding: "60px 40px", textAlign: "center", marginBottom: 24, cursor: "pointer" }}
-                  onClick={() => setShowUpload(true)}
-                >
-                  <i className="bi bi-cloud-upload" style={{ fontSize: "3rem", color: "#94a3b8" }} />
-                  <h5 style={{ marginTop: 16, fontWeight: 600, color: "#334155" }}>No analysis runs yet</h5>
-                  <p style={{ color: "#94a3b8", marginBottom: 20 }}>Upload your EFT and EFTR datasets to run a compliance analysis</p>
-                  <button style={{ padding: "10px 28px", borderRadius: 8, border: "none", background: "linear-gradient(135deg, #1a3a5c 0%, #2563eb 100%)", color: "#fff", fontWeight: 600, cursor: "pointer" }}>
-                    <i className="bi bi-play-fill me-2" />Start First Run
-                  </button>
-                </div>
-              )}
-
-              {runDetail && (
-                <div className="mb-4 p-4 rounded-3 text-white d-flex align-items-center justify-content-between"
-                  style={{ background: "linear-gradient(135deg, #1a3a5c 0%, #2563eb 100%)" }}>
-                  <div>
-                    <div style={{ fontSize: "0.78rem", opacity: 0.8, fontFamily: "monospace" }}>Run ID: {runId}</div>
-                    <div style={{ fontSize: "0.85rem", opacity: 0.9, marginTop: 6 }}>
-                      Operator: {runDetail.operator_id} &nbsp;|&nbsp; Started: {fmtDate(runDetail.started_at)} &nbsp;|&nbsp; Completed: {fmtDate(runDetail.completed_at)}
-                    </div>
-                  </div>
-                  <SeverityBadge sev={runDetail.status} />
-                </div>
-              )}
-
-              <div className="row row-cols-4 g-3 mb-4">
-                <MetricCard label="BREACH Findings" value={breachCount} icon="shield-x" color="danger" sub="Regulatory violations requiring action" />
-                <MetricCard label="Warnings" value={warnCount} icon="exclamation-circle" color="warning" sub="Data quality & compliance gaps" />
-                <MetricCard label="Missed Reports" value={missedCount} icon="file-earmark-x" color="danger" sub="EFTs ≥ CAD $10,000 — unreported" />
-                <MetricCard label="Matched" value={matchedCount} icon="check-circle" color="success" sub="EFTs with confirmed EFTR on file" />
-              </div>
-
-              <div className="row g-3 mb-4">
-                <div className="col-4">
-                  <div className="card border-0 shadow-sm h-100" style={{ borderRadius: 12 }}>
-                    <div className="card-body p-4">
-                      <h6 className="fw-semibold text-secondary mb-3" style={{ fontSize: "0.875rem" }}>Findings by Severity</h6>
-                      <Doughnut data={severityChartData} options={{ plugins: { legend: { position: "bottom" } }, cutout: "62%" }} />
-                    </div>
-                  </div>
-                </div>
-                <div className="col-8">
-                  <div className="card border-0 shadow-sm h-100" style={{ borderRadius: 12 }}>
-                    <div className="card-body p-4">
-                      <h6 className="fw-semibold text-secondary mb-3" style={{ fontSize: "0.875rem" }}>Findings by Rule Code</h6>
-                      {Object.keys(ruleGroups).length > 0
-                        ? <Bar data={rulesChartData} options={{ plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { grid: { display: false } } } }} />
-                        : <div className="d-flex flex-column align-items-center justify-content-center h-100 text-muted py-5" style={{ cursor: "pointer" }} onClick={() => setShowUpload(true)}>
-                            <i className="bi bi-bar-chart" style={{ fontSize: "2.5rem", opacity: 0.3 }} />
-                            <div style={{ marginTop: 10, fontSize: "0.875rem" }}>No findings yet — run an analysis to see results</div>
-                          </div>
-                      }
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <TableCard title="Run History">
-                <thead className="table-light">
-                  <tr>
-                    <th>Run ID</th><th>Status</th><th>Operator</th>
-                    <th>Started</th><th>Completed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {runs.length === 0
-                    ? <EmptyRow cols={5} message="No runs found — click 'Upload & Run Analysis' to start" />
-                    : runs.map(r => (
-                      <tr key={r.run_id} style={{ cursor: "pointer" }} onClick={() => setRunId(r.run_id)}>
-                        <td className="font-monospace" style={{ fontSize: "0.78rem" }}>{r.run_id.slice(0, 8)}…</td>
-                        <td><SeverityBadge sev={r.status} /></td>
-                        <td>{r.operator_id}</td>
-                        <td style={{ color: "#64748b", fontSize: "0.78rem" }}>{fmtDate(r.started_at)}</td>
-                        <td style={{ color: "#64748b", fontSize: "0.78rem" }}>{fmtDate(r.completed_at)}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </TableCard>
-            </>
-          )}
-
-          {/* ── MISSED TRANSACTIONS ── */}
-          {page === "missed" && (
-            <>
-              <div className="d-flex justify-content-between align-items-start mb-4">
-                <p className="text-muted mb-0" style={{ fontSize: "0.875rem" }}>EFTs with no corresponding EFTR filed with FINTRAC</p>
-                <a className="btn btn-primary btn-sm" href={`${API}/reports/${runId}/missed-transactions`} target="_blank">
-                  <i className="bi bi-download me-1" />Download Excel Report
-                </a>
-              </div>
-              <div className="row row-cols-3 g-3 mb-4">
-                <MetricCard label="Missed (Unreported)" value={missedCount} icon="file-earmark-x" color="danger" sub="EFTs with no EFTR filed" />
-                <MetricCard label="Phantom (Unmatched)" value={phantomCount} icon="question-circle" color="warning" sub="EFTRs with no underlying EFT" />
-                <MetricCard label="Matched" value={matchedCount} icon="check-circle" color="success" sub="Successfully reconciled" />
-              </div>
-              <TableCard title="Unmatched EFT Transactions"
-                controls={filterSelect(missedFilter, setMissedFilter, [
-                  { value: "", label: "All Statuses" },
-                  { value: "MISSED", label: "MISSED" },
-                  { value: "PHANTOM", label: "PHANTOM" },
-                ])}>
-                <thead className="table-light">
-                  <tr><th>Status</th><th>EFT Transaction ID</th><th>Match Method</th><th>Variance (CAD)</th><th>Detail</th></tr>
-                </thead>
-                <tbody>
-                  {loading ? <LoadingRow cols={5} />
-                    : filteredMissed.length === 0 ? <EmptyRow cols={5} message="No unmatched transactions" />
-                    : filteredMissed.map(r => (
-                      <tr key={r.result_id}>
-                        <td><SeverityBadge sev={r.status} /></td>
-                        <td className="font-monospace" style={{ fontSize: "0.78rem" }}>{r.eft_transaction_id ?? "—"}</td>
-                        <td style={{ color: "#64748b" }}>{r.match_method ?? "—"}</td>
-                        <td>{r.variance_amount != null ? fmtCad(r.variance_amount) : "—"}</td>
-                        <td title={JSON.stringify(r.detail)} style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#64748b", fontSize: "0.75rem" }}>
-                          {String((r.detail as Record<string, unknown>)?.reason ?? JSON.stringify(r.detail))}
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </TableCard>
-            </>
-          )}
-
-          {/* ── RULE FINDINGS ── */}
-          {page === "findings" && (
-            <>
-              <p className="text-muted mb-4" style={{ fontSize: "0.875rem" }}>FINTRAC compliance rule evaluation results for this run</p>
-              <div className="row row-cols-4 g-3 mb-4">
-                <MetricCard label="BREACH" value={breachCount} icon="shield-x" color="danger" sub="Regulatory violations" />
-                <MetricCard label="WARN" value={warnCount} icon="exclamation-triangle" color="warning" sub="Compliance gaps" />
-                <MetricCard label="INFO" value={infoCount} icon="info-circle" color="primary" sub="Informational flags" />
-                <MetricCard label="Total" value={findings.length} icon="list-check" color="success" sub="All findings this run" />
-              </div>
-              <TableCard title="All Findings"
-                controls={<>
-                  {filterSelect(findingSevFilter, setFindingSevFilter, [
-                    { value: "", label: "All Severities" },
-                    { value: "BREACH", label: "BREACH" },
-                    { value: "WARN", label: "WARN" },
-                    { value: "INFO", label: "INFO" },
-                  ])}
-                  {filterSelect(findingRuleFilter, setFindingRuleFilter, [
-                    { value: "", label: "All Rules" },
-                    ...uniqueRuleCodes.map(c => ({ value: c, label: c })),
-                  ])}
-                </>}>
-                <thead className="table-light">
-                  <tr><th>Severity</th><th>Rule Code</th><th>Ver.</th><th>Transaction ID</th><th>Finding Detail</th><th>Detected At</th></tr>
-                </thead>
-                <tbody>
-                  {loading ? <LoadingRow cols={6} />
-                    : filteredFindings.length === 0 ? <EmptyRow cols={6} message="No findings match this filter" />
-                    : filteredFindings.map(f => (
-                      <tr key={f.finding_id}>
-                        <td><SeverityBadge sev={f.severity} /></td>
-                        <td style={{ fontWeight: 500, fontSize: "0.78rem" }}>{f.rule_code}</td>
-                        <td style={{ color: "#94a3b8", fontSize: "0.78rem" }}>v{f.rule_version}</td>
-                        <td className="font-monospace" style={{ fontSize: "0.78rem" }}>{f.transaction_id ?? "—"}</td>
-                        <td title={JSON.stringify(f.detail)} style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#64748b", fontSize: "0.75rem" }}>
-                          {String((f.detail as Record<string, unknown>)?.reason ?? JSON.stringify(f.detail))}
-                        </td>
-                        <td style={{ color: "#64748b", fontSize: "0.75rem" }}>{fmtDate(f.created_at)}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </TableCard>
-            </>
-          )}
-
-          {/* ── REPERFORMANCE ── */}
-          {page === "reperformance" && (
-            <>
-              <p className="text-muted mb-4" style={{ fontSize: "0.875rem" }}>Independent recalculation of reported amounts using Bank of Canada rates</p>
-              <div className="row row-cols-3 g-3 mb-4">
-                <MetricCard label="BREACH Variances" value={reperform.filter(r => r.status === "BREACH").length} icon="exclamation-octagon" color="danger" sub="Material differences >1%" />
-                <MetricCard label="Minor Variances" value={reperform.filter(r => r.status === "VARIANCE").length} icon="dash-circle" color="warning" sub="Small differences detected" />
-                <MetricCard label="Pass" value={reperform.filter(r => r.status === "PASS").length} icon="check-circle" color="success" sub="Amounts confirmed correct" />
-              </div>
-              <TableCard title="Calculation Comparison"
-                controls={<>
-                  {filterSelect(reperformTypeFilter, setReperformTypeFilter, [
-                    { value: "", label: "All Types" },
-                    { value: "THRESHOLD", label: "Threshold" },
-                    { value: "AGGREGATION", label: "Aggregation" },
-                    { value: "FX", label: "FX Conversion" },
-                  ])}
-                  {filterSelect(reperformStatusFilter, setReperformStatusFilter, [
-                    { value: "", label: "All Statuses" },
-                    { value: "BREACH", label: "BREACH" },
-                    { value: "VARIANCE", label: "VARIANCE" },
-                    { value: "PASS", label: "PASS" },
-                  ])}
-                </>}>
-                <thead className="table-light">
-                  <tr><th>Status</th><th>Type</th><th>Reported Value</th><th>Reperformed Value</th><th>Variance $</th><th>Variance %</th><th>Detail</th></tr>
-                </thead>
-                <tbody>
-                  {loading ? <LoadingRow cols={7} />
-                    : filteredReperform.length === 0
-                    ? <EmptyRow cols={7} message="No reperformance results. Run Phase 2 to generate them: python scripts/run_phase2.py --run-id <id>" />
-                    : filteredReperform.map(r => (
-                      <tr key={r.result_id}>
-                        <td><SeverityBadge sev={r.status} /></td>
-                        <td style={{ fontSize: "0.78rem" }}>{r.calculation_type}</td>
-                        <td>{fmtCad(r.reported_value)}</td>
-                        <td>{fmtCad(r.reperformed_value)}</td>
-                        <td style={{ color: (r.variance_absolute ?? 0) > 0 ? "#dc2626" : "#16a34a" }}>{fmtCad(r.variance_absolute)}</td>
-                        <td style={{ color: (r.variance_pct ?? 0) > 0.01 ? "#dc2626" : "#16a34a" }}>
-                          {r.variance_pct != null ? `${(r.variance_pct * 100).toFixed(2)}%` : "—"}
-                        </td>
-                        <td title={JSON.stringify(r.detail)} style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#64748b", fontSize: "0.75rem" }}>
-                          {JSON.stringify(r.detail)}
-                        </td>
-                      </tr>
-                    ))}
-                </tbody>
-              </TableCard>
-            </>
-          )}
-
-          {/* ── AUDIT LOG ── */}
-          {page === "audit" && (
-            <>
-              <p className="text-muted mb-4" style={{ fontSize: "0.875rem" }}>Append-only audit trail — every pipeline event recorded for this run</p>
-              <TableCard title="Pipeline Events"
-                controls={filterSelect(auditSevFilter, setAuditSevFilter, [
-                  { value: "", label: "All Severities" },
-                  { value: "INFO", label: "INFO" },
-                  { value: "WARN", label: "WARN" },
-                  { value: "ERROR", label: "ERROR" },
-                ])}>
-                <thead className="table-light">
-                  <tr><th>Time (UTC)</th><th>Severity</th><th>Component</th><th>Event Type</th><th>Message</th></tr>
-                </thead>
-                <tbody>
-                  {loading ? <LoadingRow cols={5} />
-                    : filteredAudit.length === 0 ? <EmptyRow cols={5} message="No audit entries found" />
-                    : filteredAudit.map(e => (
-                      <tr key={e.log_id}>
-                        <td style={{ color: "#64748b", fontSize: "0.75rem", whiteSpace: "nowrap" }}>{fmtDate(e.created_at)}</td>
-                        <td><SeverityBadge sev={e.severity} /></td>
-                        <td style={{ color: "#64748b", fontSize: "0.78rem" }}>{e.component}</td>
-                        <td style={{ fontWeight: 500, fontSize: "0.78rem" }}>{e.event_type}</td>
-                        <td style={{ fontSize: "0.78rem" }}>{e.message}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </TableCard>
-            </>
-          )}
-
-        </div>
-      </div>
     </div>
   );
 }
