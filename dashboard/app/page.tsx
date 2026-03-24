@@ -10,7 +10,7 @@ import {
   LayoutDashboard, ClipboardList, Scale, ScrollText, Menu, X,
   TrendingUp, TrendingDown, ChevronDown, BookOpen, Clock,
   CheckCheck, MessageSquarePlus, ArrowUpRight, Ban, Gavel,
-  ChevronRight, Copy, Download, ListChecks,
+  ChevronRight, Copy, Download, ListChecks, Trash2,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -91,6 +91,27 @@ function fmtDate(d: string | null) {
   return new Date(d).toLocaleString("en-CA", { dateStyle: "medium", timeStyle: "short" });
 }
 function shortId(id: string) { return id.slice(0, 8) + "…"; }
+
+// ── localStorage persistence ────────────────────────────────────
+const STORAGE_KEY = "eftr_dashboard_v1";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function saveToStorage(data: Record<string, any>) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...data, savedAt: new Date().toISOString() })); }
+  catch { /* storage unavailable */ }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadFromStorage(): Record<string, any> | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function clearStorage() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
+}
 
 const DEADLINE_RULES = new Set([
   "FINTRAC_SINGLE_THRESHOLD", "FINTRAC_24HR_AGGREGATION", "FINTRAC_FILING_DEADLINE",
@@ -452,12 +473,35 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    (async () => {
-      try { await apiFetch("/health"); setApiOnline(true); } catch { setApiOnline(false); }
-      const d = await loadRuns();
-      if (d.length) setRunId(d[0].run_id);
+    // 1. Try localStorage first — instant load, no API dependency
+    const cached = loadFromStorage();
+    if (cached?.run_id) {
+      const entry: Run = cached.run ?? { run_id: cached.run_id, status: "COMPLETED", operator_id: "", started_at: null, completed_at: null };
+      setRuns([entry]);
+      skipNextFetch.current = true;
+      setRunId(cached.run_id);
+      setRunDetail(entry);
+      setRecon(cached.reconciliation ?? []);
+      setFindings(cached.findings ?? []);
+      setAudit(cached.audit_log ?? []);
+      setReperform(cached.reperform ?? []);
+      setActions(cached.actions ?? {});
+      if (cached.memo) setMemo(cached.memo as Memo);
       setLoading(false);
-    })();
+    }
+
+    // 2. Ping health in background (doesn't block display)
+    apiFetch("/health").then(() => setApiOnline(true)).catch(() => setApiOnline(false));
+
+    // 3. If nothing in storage, fall back to live API
+    if (!cached?.run_id) {
+      (async () => {
+        try { await apiFetch("/health"); setApiOnline(true); } catch { setApiOnline(false); }
+        const d = await loadRuns();
+        if (d.length) setRunId(d[0].run_id);
+        setLoading(false);
+      })();
+    }
   }, []);
 
   useEffect(() => {
@@ -486,6 +530,8 @@ export default function Dashboard() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function handleRunCreated(data: any) {
     const entry: Run = data.run ?? { run_id: data.run_id, status: data.status, operator_id: "", started_at: null, completed_at: null };
+    const actionMap = actionsToMap(data.actions ?? []);
+
     setRuns(prev => [entry, ...prev.filter(r => r.run_id !== data.run_id)]);
     skipNextFetch.current = true;
     setRunId(data.run_id);
@@ -494,10 +540,22 @@ export default function Dashboard() {
     setFindings(data.findings ?? []);
     setAudit(data.audit_log ?? []);
     setReperform([]);
-    setActions(actionsToMap(data.actions ?? []));
+    setActions(actionMap);
     if (data.memo) setMemo(data.memo as Memo);
     setLoading(false);
     setPage("overview");
+
+    // Persist to localStorage so results survive page refresh and future visits
+    saveToStorage({
+      run_id: data.run_id,
+      run: entry,
+      reconciliation: data.reconciliation ?? [],
+      findings: data.findings ?? [],
+      audit_log: data.audit_log ?? [],
+      reperform: [],
+      actions: actionMap,
+      memo: data.memo ?? null,
+    });
   }
 
   // ── Derived data for charts ────────────────────────────────────
@@ -754,6 +812,24 @@ export default function Dashboard() {
             <ChevronDown size={12} />
           </div>
         )}
+        {/* Clear data button — only shown when data exists */}
+        {(recon.length > 0 || findings.length > 0) && (
+          <button
+            onClick={() => {
+              if (!confirm("Clear all current data and start fresh? This cannot be undone.")) return;
+              clearStorage();
+              setRunId(""); setRunDetail(null); setRuns([]);
+              setRecon([]); setFindings([]); setAudit([]); setReperform([]);
+              setActions({}); setMemo(null); setSelectedFinding(null);
+              setPage("overview");
+            }}
+            title="Clear data and re-upload"
+            className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold border transition-colors hover:bg-red-50"
+            style={{ borderColor: "#FECACA", color: C.breach[0] }}>
+            <Trash2 size={13} />
+            Clear Data
+          </button>
+        )}
         <button onClick={() => setShowUpload(true)}
           className="flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-white shadow-md transition-opacity hover:opacity-90"
           style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
@@ -956,9 +1032,14 @@ export default function Dashboard() {
           }),
         }).then(r => r.json());
       }
-      setActions(prev => ({ ...prev, [finding.finding_id]: result }));
+      const newActions = { ...actions, [finding.finding_id]: result };
+      setActions(newActions);
       setActionForm(null);
       setFormData({});
+
+      // Mirror to localStorage so action state survives refresh
+      const cached = loadFromStorage();
+      if (cached) saveToStorage({ ...cached, actions: newActions });
     } finally {
       setActionSaving(false);
     }
