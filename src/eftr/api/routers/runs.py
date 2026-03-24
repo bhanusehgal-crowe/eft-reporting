@@ -138,8 +138,10 @@ def _run_pipeline(run_id: str, eft_file: str, reported_file: str, operator_id: s
             run.status = "COMPLETED"
             run.completed_at = utcnow()
         except Exception as exc:
+            import traceback
             run.status = "FAILED"
             run.completed_at = utcnow()
+            run.parameters = {**run.parameters, "error": str(exc), "traceback": traceback.format_exc()}
         session.commit()
 
 

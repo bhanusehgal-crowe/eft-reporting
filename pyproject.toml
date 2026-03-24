@@ -23,6 +23,7 @@ dependencies = [
     "holidays>=0.45",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0",
+    "fastparquet>=2023.10",
 ]
 
 [project.optional-dependencies]
