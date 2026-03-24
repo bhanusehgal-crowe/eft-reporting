@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.eftr.api.routers import reconciliation, reports, rules, runs
+from src.eftr.api.routers import actions, memo, reconciliation, reports, rules, runs
 
 
 def _bootstrap():
@@ -27,6 +27,7 @@ def _bootstrap():
     import src.eftr.models.rule                  # noqa: F401
     import src.eftr.models.audit_log             # noqa: F401
     import src.eftr.models.reperformance         # noqa: F401
+    import src.eftr.models.action                # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     try:
@@ -65,6 +66,8 @@ app.include_router(runs.router, prefix="/runs", tags=["runs"])
 app.include_router(reconciliation.router, prefix="/runs", tags=["reconciliation"])
 app.include_router(rules.router, prefix="/rules", tags=["rules"])
 app.include_router(reports.router, prefix="/reports", tags=["reports"])
+app.include_router(actions.router, prefix="/actions", tags=["actions"])
+app.include_router(memo.router, prefix="/memo", tags=["memo"])
 
 
 @app.get("/health")

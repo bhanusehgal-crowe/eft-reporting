@@ -83,14 +83,22 @@ async def upload_and_run(
     # separate /tmp filesystems with separate SQLite DBs).
     from config.database import SessionLocal as _SL
     from src.eftr.models.audit_log import AuditLog
+    from src.eftr.models.action import ComplianceAction
+    from src.eftr.api.routers.memo import generate_memo
     with _SL() as s:
         run_obj = s.get(ReconciliationRun, run_id)
         recon_results = s.query(ReconciliationResult).filter_by(run_id=run_id).all()
         rule_findings = s.query(RuleFinding).filter_by(run_id=run_id).all()
         audit_entries = s.query(AuditLog).filter_by(run_id=run_id).order_by(AuditLog.created_at).all()
+        action_entries = s.query(ComplianceAction).filter_by(run_id=run_id).all()
 
         status = run_obj.status if run_obj else "FAILED"
         err = (run_obj.parameters or {}).get("error") if run_obj else None
+
+        try:
+            memo_data = generate_memo(run_id, s)
+        except Exception:
+            memo_data = None
 
         return {
             "run_id": run_id,
@@ -142,6 +150,22 @@ async def upload_and_run(
                 }
                 for e in audit_entries
             ],
+            "actions": [
+                {
+                    "action_id": a.action_id,
+                    "finding_id": a.finding_id,
+                    "run_id": a.run_id,
+                    "status": a.status,
+                    "operator_id": a.operator_id,
+                    "notes": a.notes,
+                    "filed_ref": a.filed_ref,
+                    "decision": a.decision,
+                    "deadline": a.deadline.isoformat() if a.deadline else None,
+                    "updated_at": a.updated_at.isoformat() if a.updated_at else None,
+                }
+                for a in action_entries
+            ],
+            "memo": memo_data,
         }
 
 

@@ -8,7 +8,9 @@ import {
 import {
   ShieldAlert, AlertTriangle, FileX, CheckCircle2, Upload,
   LayoutDashboard, ClipboardList, Scale, ScrollText, Menu, X,
-  TrendingUp, TrendingDown, ChevronDown,
+  TrendingUp, TrendingDown, ChevronDown, BookOpen, Clock,
+  CheckCheck, MessageSquarePlus, ArrowUpRight, Ban, Gavel,
+  ChevronRight, Copy, Download,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -57,6 +59,26 @@ interface AuditEntry {
   component: string; operator_id: string | null;
   message: string; created_at: string;
 }
+interface ComplianceAction {
+  action_id: string; finding_id: string; run_id: string;
+  status: string; operator_id: string;
+  notes: string | null; filed_ref: string | null; decision: string | null;
+  deadline: string | null; updated_at: string | null;
+}
+interface MemoBreachEntry {
+  rule: string; count: number; action_required: string;
+  earliest_deadline?: string; days_remaining?: number;
+}
+interface Memo {
+  run_id: string; generated_at: string; operator_id: string; period: string;
+  executive_summary: string;
+  kpi: { total_transactions: number; matched: number; missed: number; phantom: number; breaches: number; warnings: number; actions_taken: number };
+  breach_summary: MemoBreachEntry[];
+  overdue_filings: Array<{ transaction_id: string | null; rule: string; deadline: string; days_remaining: number; status: string }>;
+  travel_rule_exceptions: Array<{ transaction_id: string | null; rule: string; missing_fields: string[]; current_status: string }>;
+  recommended_actions: string[];
+  disclaimer: string;
+}
 
 // ── Helpers ─────────────────────────────────────────────────────
 async function apiFetch<T>(path: string): Promise<T> {
@@ -69,6 +91,72 @@ function fmtDate(d: string | null) {
   return new Date(d).toLocaleString("en-CA", { dateStyle: "medium", timeStyle: "short" });
 }
 function shortId(id: string) { return id.slice(0, 8) + "…"; }
+
+const DEADLINE_RULES = new Set([
+  "FINTRAC_SINGLE_THRESHOLD", "FINTRAC_24HR_AGGREGATION", "FINTRAC_FILING_DEADLINE",
+]);
+
+/** Add n business days (weekdays only — simplified, no holiday calendar on frontend) */
+function addBizDays(start: Date, n: number): Date {
+  let count = 0; const d = new Date(start);
+  while (count < n) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) count++; }
+  return d;
+}
+
+function computeDeadline(finding: Finding): Date | null {
+  if (!DEADLINE_RULES.has(finding.rule_code)) return null;
+  const d = finding.detail as Record<string, string>;
+  const vd = d?.value_date || d?.transaction_date;
+  if (!vd) return null;
+  try { return addBizDays(new Date(vd), 5); } catch { return null; }
+}
+
+function deadlineDays(dl: Date): number {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = dl.getTime() - today.getTime();
+  return Math.round(diff / (1000 * 60 * 60 * 24));
+}
+
+function DeadlinePill({ finding, action }: { finding: Finding; action?: ComplianceAction }) {
+  const filed = action?.status === "filed" || action?.status === "resolved";
+  const dl = action?.deadline ? new Date(action.deadline) : computeDeadline(finding);
+  if (!dl) return <span style={{ color: C.muted }}>—</span>;
+  const days = deadlineDays(dl);
+  const [bg, text, label] = filed
+    ? ["#F1F5F9", "#94A3B8", "Filed"]
+    : days < 0
+      ? ["#FEE2E2", "#B91C1C", `${Math.abs(days)}d overdue`]
+      : days === 0
+        ? ["#FEE2E2", "#B91C1C", "Due today"]
+        : days <= 2
+          ? ["#FFEDD5", "#C2410C", `${days}d left`]
+          : ["#D1FAE5", "#047857", `${days}d left`];
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold"
+      style={{ background: bg, color: text }}>
+      {!filed && <Clock size={10} />}{label}
+    </span>
+  );
+}
+
+const ACTION_STATUS_STYLES: Record<string, { bg: string; text: string }> = {
+  open:         { bg: "#F1F5F9", text: "#475569" },
+  under_review: { bg: "#DBEAFE", text: "#1D4ED8" },
+  filed:        { bg: "#D1FAE5", text: "#047857" },
+  resolved:     { bg: "#D1FAE5", text: "#047857" },
+  disputed:     { bg: "#FEF3C7", text: "#B45309" },
+  escalated:    { bg: "#EDE9FE", text: "#6D28D9" },
+};
+
+function ActionStatusBadge({ status }: { status: string }) {
+  const s = ACTION_STATUS_STYLES[status] ?? { bg: "#F1F5F9", text: "#475569" };
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold capitalize"
+      style={{ background: s.bg, color: s.text }}>
+      {status.replace("_", " ")}
+    </span>
+  );
+}
 
 // ── KPI Card ────────────────────────────────────────────────────
 function KpiCard({
@@ -345,7 +433,17 @@ export default function Dashboard() {
   const [showUpload, setShowUpload] = useState(false);
   const [missedFilter, setMissedFilter] = useState("");
   const [findingSevFilter, setFindingSevFilter] = useState("");
+  const [actions, setActions] = useState<Record<string, ComplianceAction>>({});
+  const [memo, setMemo] = useState<Memo | null>(null);
+  const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
+  const [actionForm, setActionForm] = useState<string | null>(null); // which form is open
+  const [formData, setFormData] = useState<Record<string, string>>({});
+  const [actionSaving, setActionSaving] = useState(false);
   const skipNextFetch = useRef(false);
+
+  function actionsToMap(list: ComplianceAction[]): Record<string, ComplianceAction> {
+    return Object.fromEntries(list.map(a => [a.finding_id, a]));
+  }
 
   async function loadRuns() {
     try { const d = await apiFetch<Run[]>("/runs"); setRuns(d); return d; }
@@ -371,12 +469,16 @@ export default function Dashboard() {
       apiFetch<{ findings: Finding[] }>(`/runs/${runId}/findings?page_size=500`),
       apiFetch<{ results: ReperformResult[] }>(`/runs/${runId}/reperformance`),
       apiFetch<{ entries: AuditEntry[] }>(`/runs/${runId}/audit?page_size=500`).catch(() => ({ entries: [] })),
-    ]).then(([run, reconData, findData, reperformData, auditData]) => {
+      apiFetch<ComplianceAction[]>(`/actions?run_id=${runId}`).catch(() => []),
+      apiFetch<Memo>(`/memo/${runId}`).catch(() => null),
+    ]).then(([run, reconData, findData, reperformData, auditData, actionsData, memoData]) => {
       setRunDetail(run);
       setRecon(reconData.results ?? []);
       setFindings(findData.findings ?? []);
       setReperform(reperformData.results ?? []);
       setAudit(auditData.entries ?? []);
+      setActions(actionsToMap(actionsData ?? []));
+      if (memoData) setMemo(memoData as Memo);
     }).finally(() => setLoading(false));
   }, [runId]);
 
@@ -391,6 +493,8 @@ export default function Dashboard() {
     setFindings(data.findings ?? []);
     setAudit(data.audit_log ?? []);
     setReperform([]);
+    setActions(actionsToMap(data.actions ?? []));
+    if (data.memo) setMemo(data.memo as Memo);
     setLoading(false);
     setPage("overview");
   }
@@ -431,6 +535,7 @@ export default function Dashboard() {
     { id: "findings",  icon: ShieldAlert,     label: "Rule Findings" },
     { id: "reperform", icon: Scale,           label: "Reperformance" },
     { id: "audit",     icon: ScrollText,      label: "Audit Log" },
+    { id: "memo",      icon: BookOpen,        label: "Manager Memo" },
   ];
 
   // ── Filtered data ──────────────────────────────────────────────
@@ -803,43 +908,277 @@ export default function Dashboard() {
     </TablePanel>
   );
 
-  const findingsPage = (
-    <TablePanel
-      title={`Rule Findings (${filteredFindings.length})`}
-      controls={
-        <select value={findingSevFilter} onChange={e => setFindingSevFilter(e.target.value)}
-          className="rounded-lg border px-3 py-1.5 text-xs outline-none"
-          style={{ borderColor: C.border, color: C.text }}>
-          <option value="">All severities</option>
-          <option value="BREACH">BREACH</option>
-          <option value="WARN">WARN</option>
-          <option value="INFO">INFO</option>
-        </select>
+  // ── Action save helper ─────────────────────────────────────────
+  async function saveAction(finding: Finding, patch: Partial<ComplianceAction>) {
+    const existing = actions[finding.finding_id];
+    setActionSaving(true);
+    try {
+      let result: ComplianceAction;
+      if (existing) {
+        result = await fetch(`${API}/actions/${existing.action_id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        }).then(r => r.json());
+      } else {
+        result = await fetch(`${API}/actions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            finding_id: finding.finding_id,
+            run_id: runId,
+            operator_id: runDetail?.operator_id ?? "unknown",
+            ...patch,
+          }),
+        }).then(r => r.json());
       }
-    >
-      <thead>
-        <tr><Th>Severity</Th><Th>Rule</Th><Th>Transaction</Th><Th>Detail</Th><Th>Time</Th></tr>
-      </thead>
-      <tbody>
-        {loading
-          ? <tr><td colSpan={5} className="text-center py-10"><div className="inline-block w-6 h-6 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: C.chart[0], borderTopColor: "transparent" }} /></td></tr>
-          : filteredFindings.length === 0
-            ? <EmptyRow cols={5} msg="No findings for the selected filter" />
-            : filteredFindings.map(f => (
-              <tr key={f.finding_id} className="hover:bg-gray-50 transition-colors">
-                <Td><SevBadge sev={f.severity} /></Td>
-                <Td><span className="text-xs font-mono">{f.rule_code}</span></Td>
-                <Td><span className="text-xs font-mono">{f.transaction_id ?? "—"}</span></Td>
-                <Td>
-                  <span className="text-xs" style={{ color: C.muted }}>
-                    {(f.detail as { reason?: string })?.reason ?? JSON.stringify(f.detail).slice(0, 80)}
-                  </span>
-                </Td>
-                <Td><span className="text-xs">{fmtDate(f.created_at)}</span></Td>
-              </tr>
-            ))}
-      </tbody>
-    </TablePanel>
+      setActions(prev => ({ ...prev, [finding.finding_id]: result }));
+      setActionForm(null);
+      setFormData({});
+    } finally {
+      setActionSaving(false);
+    }
+  }
+
+  // ── Finding Drawer ─────────────────────────────────────────────
+  const drawer = selectedFinding && (() => {
+    const f = selectedFinding;
+    const a = actions[f.finding_id];
+    const detail = f.detail as Record<string, string | number | string[]>;
+    const isBreach = f.severity === "BREACH";
+    const isWarn = f.severity === "WARN";
+    const isTravelRule = ["FINTRAC_TRAVEL_RULE", "FINTRAC_MANDATORY_FIELDS"].includes(f.rule_code);
+
+    const ActionBtn = ({ icon: Icon, label, color, onClick }: {
+      icon: React.ElementType; label: string; color: string; onClick: () => void;
+    }) => (
+      <button onClick={onClick}
+        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-opacity hover:opacity-80"
+        style={{ background: color, color: "#fff" }}>
+        <Icon size={13} />{label}
+      </button>
+    );
+
+    return (
+      <>
+        {/* Backdrop */}
+        <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,0.2)" }}
+          onClick={() => { setSelectedFinding(null); setActionForm(null); setFormData({}); }} />
+        {/* Drawer */}
+        <div className="fixed right-0 top-0 h-screen z-50 flex flex-col shadow-2xl overflow-y-auto"
+          style={{ width: 460, background: C.surface, borderLeft: `1px solid ${C.border}` }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-4 border-b sticky top-0"
+            style={{ borderColor: C.border, background: C.surface }}>
+            <div className="flex items-center gap-2">
+              <SevBadge sev={f.severity} />
+              <span className="font-mono text-xs" style={{ color: C.muted }}>{f.rule_code}</span>
+            </div>
+            <button onClick={() => { setSelectedFinding(null); setActionForm(null); setFormData({}); }}
+              className="p-1.5 rounded-lg hover:bg-gray-100">
+              <X size={16} style={{ color: C.muted }} />
+            </button>
+          </div>
+
+          <div className="p-5 flex flex-col gap-5">
+            {/* Transaction details */}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Transaction Details</p>
+              <div className="rounded-xl p-4 grid grid-cols-2 gap-2 text-xs"
+                style={{ background: "#F8FAFC", border: `1px solid ${C.border}` }}>
+                {f.transaction_id && <><span style={{ color: C.muted }}>Transaction ID</span><span className="font-mono font-semibold">{f.transaction_id}</span></>}
+                {detail.value_date && <><span style={{ color: C.muted }}>Value Date</span><span>{String(detail.value_date)}</span></>}
+                {detail.cad_amount && <><span style={{ color: C.muted }}>CAD Amount</span><span className="font-semibold">${Number(detail.cad_amount).toLocaleString("en-CA", { minimumFractionDigits: 2 })}</span></>}
+                {detail.direction && <><span style={{ color: C.muted }}>Direction</span><span>{String(detail.direction)}</span></>}
+                {detail.transaction_date && <><span style={{ color: C.muted }}>Txn Date</span><span>{String(detail.transaction_date)}</span></>}
+                {detail.filing_date && <><span style={{ color: C.muted }}>Filed Date</span><span>{String(detail.filing_date)}</span></>}
+                {detail.reason && <><span style={{ color: C.muted }} className="col-span-2 pt-1 border-t" style={{ borderColor: C.border }}>Finding Reason</span><span className="col-span-2" style={{ color: C.text }}>{String(detail.reason)}</span></>}
+              </div>
+            </div>
+
+            {/* Deadline (BREACH only) */}
+            {isBreach && (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>EFTR Filing Deadline</p>
+                <div className="flex items-center gap-3">
+                  <DeadlinePill finding={f} action={a} />
+                  {a?.deadline && <span className="text-xs" style={{ color: C.muted }}>Due {a.deadline}</span>}
+                </div>
+              </div>
+            )}
+
+            {/* Current action status */}
+            {a && (
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Current Status</p>
+                <div className="rounded-xl p-3 flex flex-col gap-1.5"
+                  style={{ background: "#F8FAFC", border: `1px solid ${C.border}` }}>
+                  <div className="flex items-center gap-2">
+                    <ActionStatusBadge status={a.status} />
+                    <span className="text-xs" style={{ color: C.muted }}>by {a.operator_id}</span>
+                  </div>
+                  {a.filed_ref && <p className="text-xs"><span style={{ color: C.muted }}>FINTRAC Ref: </span><span className="font-mono font-semibold">{a.filed_ref}</span></p>}
+                  {a.decision && <p className="text-xs"><span style={{ color: C.muted }}>Decision: </span><span className="font-semibold capitalize">{a.decision}</span></p>}
+                  {a.notes && <p className="text-xs p-2 rounded-lg mt-1" style={{ background: "#EEF2FF", color: "#3730A3" }}>💬 {a.notes}</p>}
+                  {a.updated_at && <p className="text-xs" style={{ color: C.muted }}>Last updated {fmtDate(a.updated_at)}</p>}
+                </div>
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Actions</p>
+              <div className="flex flex-wrap gap-2">
+                {isBreach && <ActionBtn icon={CheckCheck} label="File EFTR" color={C.matched[0]} onClick={() => setActionForm("file")} />}
+                {isWarn && isTravelRule && <ActionBtn icon={Gavel} label="Log Decision" color={C.chart[0]} onClick={() => setActionForm("decision")} />}
+                {isWarn && !isTravelRule && <ActionBtn icon={CheckCheck} label="Mark Resolved" color={C.matched[0]} onClick={() => saveAction(f, { status: "resolved", operator_id: runDetail?.operator_id ?? "unknown" })} />}
+                <ActionBtn icon={Ban} label="Dispute" color={C.warn[0]} onClick={() => setActionForm("dispute")} />
+                <ActionBtn icon={ArrowUpRight} label="Escalate" color={C.missed[0]} onClick={() => setActionForm("escalate")} />
+                <ActionBtn icon={MessageSquarePlus} label="Add Note" color={C.muted} onClick={() => setActionForm("note")} />
+              </div>
+            </div>
+
+            {/* Inline forms */}
+            {actionForm === "file" && (
+              <div className="rounded-xl p-4 flex flex-col gap-3 border" style={{ borderColor: C.matched[0], background: "#F0FDF4" }}>
+                <p className="text-xs font-semibold" style={{ color: C.matched[0] }}>File EFTR — Enter FINTRAC Reference</p>
+                <input value={formData.filed_ref ?? ""} onChange={e => setFormData(d => ({ ...d, filed_ref: e.target.value }))}
+                  placeholder="e.g. EFTR-2026-001234"
+                  className="rounded-lg border px-3 py-2 text-sm outline-none"
+                  style={{ borderColor: C.border }} />
+                <input value={formData.notes ?? ""} onChange={e => setFormData(d => ({ ...d, notes: e.target.value }))}
+                  placeholder="Notes (optional)" className="rounded-lg border px-3 py-2 text-sm outline-none"
+                  style={{ borderColor: C.border }} />
+                <div className="flex gap-2">
+                  <button disabled={!formData.filed_ref || actionSaving}
+                    onClick={() => saveAction(f, { status: "filed", filed_ref: formData.filed_ref, notes: formData.notes || null, operator_id: runDetail?.operator_id ?? "unknown" })}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                    style={{ background: C.matched[0] }}>
+                    {actionSaving ? "Saving…" : "Confirm Filing"}
+                  </button>
+                  <button onClick={() => { setActionForm(null); setFormData({}); }}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold" style={{ background: C.border }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {actionForm === "decision" && (
+              <div className="rounded-xl p-4 flex flex-col gap-3 border" style={{ borderColor: C.chart[0], background: "#F5F3FF" }}>
+                <p className="text-xs font-semibold" style={{ color: C.chart[0] }}>Travel Rule Exception — Log Decision</p>
+                <div className="flex gap-2">
+                  {["allow", "suspend", "reject"].map(d => (
+                    <button key={d} onClick={() => setFormData(fd => ({ ...fd, decision: d }))}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors capitalize"
+                      style={{
+                        background: formData.decision === d ? C.chart[0] : "#fff",
+                        color: formData.decision === d ? "#fff" : C.muted,
+                        borderColor: formData.decision === d ? C.chart[0] : C.border,
+                      }}>{d}</button>
+                  ))}
+                </div>
+                <textarea value={formData.notes ?? ""} onChange={e => setFormData(d => ({ ...d, notes: e.target.value }))}
+                  placeholder="Written rationale (required)" rows={3}
+                  className="rounded-lg border px-3 py-2 text-sm outline-none resize-none"
+                  style={{ borderColor: C.border }} />
+                <div className="flex gap-2">
+                  <button disabled={!formData.decision || !formData.notes?.trim() || actionSaving}
+                    onClick={() => saveAction(f, { status: "under_review", decision: formData.decision, notes: formData.notes, operator_id: runDetail?.operator_id ?? "unknown" })}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                    style={{ background: C.chart[0] }}>
+                    {actionSaving ? "Saving…" : "Log Decision"}
+                  </button>
+                  <button onClick={() => { setActionForm(null); setFormData({}); }}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold" style={{ background: C.border }}>Cancel</button>
+                </div>
+              </div>
+            )}
+
+            {(actionForm === "dispute" || actionForm === "escalate" || actionForm === "note") && (
+              <div className="rounded-xl p-4 flex flex-col gap-3 border"
+                style={{
+                  borderColor: actionForm === "note" ? C.border : actionForm === "dispute" ? C.warn[0] : C.missed[0],
+                  background: actionForm === "note" ? "#F8FAFC" : actionForm === "dispute" ? "#FFFBEB" : "#F5F3FF",
+                }}>
+                <p className="text-xs font-semibold" style={{ color: actionForm === "note" ? C.muted : actionForm === "dispute" ? C.warn[0] : C.missed[0] }}>
+                  {actionForm === "dispute" ? "Dispute Finding" : actionForm === "escalate" ? "Escalate" : "Add Case Note"}
+                </p>
+                <textarea value={formData.notes ?? ""} onChange={e => setFormData(d => ({ ...d, notes: e.target.value }))}
+                  placeholder={actionForm === "dispute" ? "Reason this finding is incorrect…" : actionForm === "escalate" ? "Escalation message / assign to…" : "Case note…"}
+                  rows={3} className="rounded-lg border px-3 py-2 text-sm outline-none resize-none"
+                  style={{ borderColor: C.border }} />
+                <div className="flex gap-2">
+                  <button disabled={!formData.notes?.trim() || actionSaving}
+                    onClick={() => saveAction(f, {
+                      status: actionForm === "note" ? (a?.status ?? "open") : actionForm as ComplianceAction["status"],
+                      notes: formData.notes, operator_id: runDetail?.operator_id ?? "unknown",
+                    })}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                    style={{ background: actionForm === "note" ? C.muted : actionForm === "dispute" ? C.warn[0] : C.missed[0] }}>
+                    {actionSaving ? "Saving…" : "Save"}
+                  </button>
+                  <button onClick={() => { setActionForm(null); setFormData({}); }}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold" style={{ background: C.border }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </>
+    );
+  })();
+
+  const findingsPage = (
+    <>
+      {drawer}
+      <TablePanel
+        title={`Rule Findings (${filteredFindings.length})`}
+        controls={
+          <select value={findingSevFilter} onChange={e => setFindingSevFilter(e.target.value)}
+            className="rounded-lg border px-3 py-1.5 text-xs outline-none"
+            style={{ borderColor: C.border, color: C.text }}>
+            <option value="">All severities</option>
+            <option value="BREACH">BREACH</option>
+            <option value="WARN">WARN</option>
+            <option value="INFO">INFO</option>
+          </select>
+        }
+      >
+        <thead>
+          <tr>
+            <Th>Severity</Th><Th>Rule</Th><Th>Transaction</Th>
+            <Th>Deadline</Th><Th>Status</Th><Th>Detail</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {loading
+            ? <tr><td colSpan={6} className="text-center py-10"><div className="inline-block w-6 h-6 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: C.chart[0], borderTopColor: "transparent" }} /></td></tr>
+            : filteredFindings.length === 0
+              ? <EmptyRow cols={6} msg="No findings for the selected filter" />
+              : filteredFindings.map(f => {
+                const a = actions[f.finding_id];
+                return (
+                  <tr key={f.finding_id}
+                    className="hover:bg-gray-50 transition-colors cursor-pointer"
+                    onClick={() => { setSelectedFinding(f); setActionForm(null); setFormData({}); }}>
+                    <Td><SevBadge sev={f.severity} /></Td>
+                    <Td><span className="text-xs font-mono">{f.rule_code.replace("FINTRAC_", "")}</span></Td>
+                    <Td><span className="text-xs font-mono">{f.transaction_id ?? "—"}</span></Td>
+                    <Td><DeadlinePill finding={f} action={a} /></Td>
+                    <Td><ActionStatusBadge status={a?.status ?? "open"} /></Td>
+                    <Td>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs" style={{ color: C.muted }}>
+                          {(f.detail as { reason?: string })?.reason?.slice(0, 60) ?? "—"}
+                        </span>
+                        <ChevronRight size={14} style={{ color: C.muted, flexShrink: 0 }} />
+                      </div>
+                    </Td>
+                  </tr>
+                );
+              })}
+        </tbody>
+      </TablePanel>
+    </>
   );
 
   const reperformPage = (
@@ -885,12 +1224,182 @@ export default function Dashboard() {
     </TablePanel>
   );
 
+  // ── Manager Memo page ──────────────────────────────────────────
+  const memoPage = !memo ? (
+    <div className="rounded-2xl border p-12 text-center" style={{ background: C.surface, borderColor: C.border }}>
+      <BookOpen size={40} className="mx-auto mb-3" style={{ color: C.muted, opacity: 0.4 }} />
+      <p className="text-sm" style={{ color: C.muted }}>
+        No memo available — upload data to generate a compliance summary.
+      </p>
+    </div>
+  ) : (
+    <div className="flex flex-col gap-4">
+      {/* Memo header */}
+      <div className="rounded-2xl p-6 border" style={{ background: C.surface, borderColor: C.border }}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest mb-1" style={{ color: C.muted }}>Compliance Analysis Memo</p>
+            <h2 className="text-xl font-bold" style={{ color: C.text }}>FINTRAC EFT Regulatory Review</h2>
+            <p className="text-sm mt-1" style={{ color: C.muted }}>{memo.period}</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => {
+              const text = [
+                "COMPLIANCE ANALYSIS MEMO",
+                `Period: ${memo.period}`,
+                `Operator: ${memo.operator_id}`,
+                `Generated: ${fmtDate(memo.generated_at)}`,
+                "",
+                "EXECUTIVE SUMMARY",
+                memo.executive_summary,
+                "",
+                "KPIs:",
+                `  Total Transactions: ${memo.kpi.total_transactions}`,
+                `  Matched: ${memo.kpi.matched} | Missed: ${memo.kpi.missed} | Breaches: ${memo.kpi.breaches} | Warnings: ${memo.kpi.warnings}`,
+                "",
+                "RECOMMENDED ACTIONS:",
+                ...memo.recommended_actions.map((a, i) => `  ${i + 1}. ${a}`),
+                "",
+                memo.disclaimer,
+              ].join("\n");
+              navigator.clipboard.writeText(text);
+            }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors hover:bg-gray-50"
+              style={{ borderColor: C.border, color: C.muted }}>
+              <Copy size={13} /> Copy
+            </button>
+            <button onClick={() => {
+              const blob = new Blob([JSON.stringify(memo, null, 2)], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url; a.download = `compliance-memo-${memo.run_id.slice(0, 8)}.json`; a.click();
+              URL.revokeObjectURL(url);
+            }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white"
+              style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
+              <Download size={13} /> Download JSON
+            </button>
+          </div>
+        </div>
+        {/* To / From / Re block */}
+        <div className="grid grid-cols-3 gap-4 p-4 rounded-xl text-xs"
+          style={{ background: "#F8FAFC", border: `1px solid ${C.border}` }}>
+          <div><span style={{ color: C.muted }}>TO: </span><strong>Compliance Management</strong></div>
+          <div><span style={{ color: C.muted }}>FROM: </span><strong>{memo.operator_id}</strong></div>
+          <div><span style={{ color: C.muted }}>REF: </span><span className="font-mono">{shortId(memo.run_id)}</span></div>
+        </div>
+      </div>
+
+      {/* Overdue alert */}
+      {memo.overdue_filings.length > 0 && (
+        <div className="rounded-2xl p-4 flex items-start gap-3 border"
+          style={{ background: "#FEF2F2", borderColor: "#FECACA" }}>
+          <AlertTriangle size={18} style={{ color: C.breach[0], flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <p className="font-semibold text-sm" style={{ color: C.breach[0] }}>
+              URGENT: {memo.overdue_filings.length} overdue or near-deadline filing{memo.overdue_filings.length > 1 ? "s" : ""}
+            </p>
+            <div className="flex flex-wrap gap-2 mt-1.5">
+              {memo.overdue_filings.map((o, i) => (
+                <span key={i} className="text-xs px-2 py-0.5 rounded-full font-semibold"
+                  style={{ background: "#FEE2E2", color: "#B91C1C" }}>
+                  {o.transaction_id} — {o.status} ({o.days_remaining < 0 ? `${Math.abs(o.days_remaining)}d overdue` : `${o.days_remaining}d left`})
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Executive summary + KPIs */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-2xl p-5 border" style={{ background: C.surface, borderColor: C.border }}>
+          <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Executive Summary</p>
+          <p className="text-sm leading-relaxed" style={{ color: C.text }}>{memo.executive_summary}</p>
+        </div>
+        <div className="rounded-2xl p-5 border" style={{ background: C.surface, borderColor: C.border }}>
+          <p className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: C.muted }}>Key Metrics</p>
+          <div className="flex flex-col gap-2">
+            {[
+              { label: "Total Transactions", value: memo.kpi.total_transactions, color: C.text },
+              { label: "Matched EFTRs", value: memo.kpi.matched, color: C.matched[0] },
+              { label: "Missed Reports", value: memo.kpi.missed, color: C.breach[0] },
+              { label: "BREACH Findings", value: memo.kpi.breaches, color: C.breach[0] },
+              { label: "Warnings", value: memo.kpi.warnings, color: C.warn[0] },
+              { label: "Actions Taken", value: memo.kpi.actions_taken, color: C.missed[0] },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="flex justify-between items-center text-xs">
+                <span style={{ color: C.muted }}>{label}</span>
+                <span className="font-bold" style={{ color }}>{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Recommended actions */}
+      <div className="rounded-2xl p-5 border" style={{ background: C.surface, borderColor: C.border }}>
+        <p className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: C.muted }}>Recommended Actions</p>
+        <ol className="flex flex-col gap-2">
+          {memo.recommended_actions.map((action, i) => (
+            <li key={i} className="flex items-start gap-3 text-sm">
+              <span className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5"
+                style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})`, color: "#fff" }}>
+                {i + 1}
+              </span>
+              <span style={{ color: C.text }}>{action}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      {/* Breach breakdown */}
+      {memo.breach_summary.length > 0 && (
+        <div className="rounded-2xl border overflow-hidden" style={{ background: C.surface, borderColor: C.border }}>
+          <div className="px-5 py-3 border-b" style={{ borderColor: C.border }}>
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: C.muted }}>Breach Summary</p>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr>
+                <Th>Rule</Th><Th>Count</Th><Th>Earliest Deadline</Th><Th>Days Remaining</Th><Th>Action Required</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {memo.breach_summary.map(b => (
+                <tr key={b.rule} className="hover:bg-gray-50">
+                  <Td><span className="font-mono text-xs">{b.rule}</span></Td>
+                  <Td><span className="font-bold">{b.count}</span></Td>
+                  <Td>{b.earliest_deadline ?? "—"}</Td>
+                  <Td>
+                    {b.days_remaining !== undefined ? (
+                      <span className="font-semibold" style={{ color: (b.days_remaining ?? 99) <= 0 ? C.breach[0] : (b.days_remaining ?? 99) <= 2 ? C.warn[0] : C.matched[0] }}>
+                        {b.days_remaining <= 0 ? `${Math.abs(b.days_remaining)}d overdue` : `${b.days_remaining}d`}
+                      </span>
+                    ) : "—"}
+                  </Td>
+                  <Td><span className="text-xs" style={{ color: C.muted }}>{b.action_required}</span></Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Disclaimer */}
+      <div className="rounded-xl p-4 text-xs" style={{ background: "#F8FAFC", color: C.muted, border: `1px solid ${C.border}` }}>
+        <strong>Disclaimer:</strong> {memo.disclaimer}
+      </div>
+    </div>
+  );
+
   const pages: Record<string, React.ReactNode> = {
     overview: overviewPage,
     missed:   missedPage,
     findings: findingsPage,
     reperform: reperformPage,
     audit:    auditPage,
+    memo:     memoPage,
   };
 
   return (
