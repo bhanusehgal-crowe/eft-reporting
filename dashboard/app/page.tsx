@@ -170,7 +170,8 @@ function UploadModal({
   onRunCreated,
 }: {
   onClose: () => void;
-  onRunCreated: (runId: string) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onRunCreated: (data: any) => void;
 }) {
   const [eftFile, setEftFile] = useState<File | null>(null);
   const [repFile, setRepFile] = useState<File | null>(null);
@@ -210,7 +211,12 @@ function UploadModal({
       const data = await res.json();
       setStepIndex(PIPELINE_STEPS.length);
       setRunId(data.run_id);
-      setPhase("done");
+      setPhase(data.status === "FAILED" ? "error" : "done");
+      if (data.status === "FAILED") {
+        setErrorMsg(data.error ?? "Pipeline failed — check run details.");
+        return;
+      }
+      onRunCreated(data);
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : "Upload failed");
       setPhase("error");
@@ -220,7 +226,6 @@ function UploadModal({
   }
 
   function handleDone() {
-    onRunCreated(runId);
     onClose();
   }
 
@@ -502,11 +507,24 @@ export default function Dashboard() {
     }).finally(() => setLoading(false));
   }, [runId]);
 
-  function handleRunCreated(newRunId: string) {
-    loadRuns().then(data => {
-      setRuns(data);
-      setRunId(newRunId);
-    });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function handleRunCreated(uploadResult: any) {
+    // Results are returned inline from the upload response — no follow-up
+    // API calls needed (Vercel multi-instance: each instance has its own /tmp DB).
+    const newRunId = uploadResult.run_id;
+    const runEntry: Run = uploadResult.run ?? {
+      run_id: newRunId, status: uploadResult.status,
+      operator_id: "", started_at: null, completed_at: null,
+    };
+    setRuns(prev => [runEntry, ...prev.filter(r => r.run_id !== newRunId)]);
+    setRunId(newRunId);
+    setRunDetail(runEntry);
+    setRecon(uploadResult.reconciliation ?? []);
+    setFindings(uploadResult.findings ?? []);
+    setAudit(uploadResult.audit_log ?? []);
+    setReperform([]);
+    setLoading(false);
+    setPage("overview");
   }
 
   // Derived counts

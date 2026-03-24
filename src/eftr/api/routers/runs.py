@@ -77,7 +77,72 @@ async def upload_and_run(
 
     # Run synchronously so the result is available when we return
     _run_pipeline(run_id, str(eft_path), str(rep_path), operator_id)
-    return {"run_id": run_id, "status": "COMPLETED"}
+
+    # Query all results on THIS instance while the DB is fresh.
+    # This avoids Vercel's multi-instance problem (different instances have
+    # separate /tmp filesystems with separate SQLite DBs).
+    from config.database import SessionLocal as _SL
+    from src.eftr.models.audit_log import AuditLog
+    with _SL() as s:
+        run_obj = s.get(ReconciliationRun, run_id)
+        recon_results = s.query(ReconciliationResult).filter_by(run_id=run_id).all()
+        rule_findings = s.query(RuleFinding).filter_by(run_id=run_id).all()
+        audit_entries = s.query(AuditLog).filter_by(run_id=run_id).order_by(AuditLog.created_at).all()
+
+        status = run_obj.status if run_obj else "FAILED"
+        err = (run_obj.parameters or {}).get("error") if run_obj else None
+
+        return {
+            "run_id": run_id,
+            "status": status,
+            "error": err,
+            "run": {
+                "run_id": run_id,
+                "status": status,
+                "triggered_by": "upload",
+                "operator_id": operator_id,
+                "started_at": run_obj.started_at.isoformat() if run_obj and run_obj.started_at else None,
+                "completed_at": run_obj.completed_at.isoformat() if run_obj and run_obj.completed_at else None,
+                "parameters": run_obj.parameters if run_obj else {},
+            },
+            "reconciliation": [
+                {
+                    "result_id": r.result_id,
+                    "status": r.status,
+                    "eft_transaction_id": r.eft_transaction_id,
+                    "reported_id": r.reported_id,
+                    "match_method": r.match_method,
+                    "variance_amount": float(r.variance_amount) if r.variance_amount else None,
+                    "detail": r.detail,
+                }
+                for r in recon_results
+            ],
+            "findings": [
+                {
+                    "finding_id": f.finding_id,
+                    "rule_code": f.rule_code,
+                    "rule_version": f.rule_version,
+                    "severity": f.severity,
+                    "transaction_id": f.transaction_id,
+                    "detail": f.detail,
+                    "created_at": f.created_at.isoformat() if f.created_at else None,
+                }
+                for f in rule_findings
+            ],
+            "audit_log": [
+                {
+                    "log_id": e.log_id,
+                    "event_type": e.event_type,
+                    "severity": e.severity,
+                    "component": e.component,
+                    "operator_id": e.operator_id,
+                    "message": e.message,
+                    "detail": e.detail,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+                for e in audit_entries
+            ],
+        }
 
 
 @router.post("", status_code=202)
