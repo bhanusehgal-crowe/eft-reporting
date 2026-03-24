@@ -462,6 +462,9 @@ export default function Dashboard() {
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
+  // When set to true, the next runId useEffect fires but skips API calls
+  // because data was already loaded from the inline upload response.
+  const skipNextFetch = useRef(false);
 
   // Filters
   const [missedFilter, setMissedFilter] = useState("");
@@ -491,6 +494,11 @@ export default function Dashboard() {
   // Load run data when runId changes
   useEffect(() => {
     if (!runId) return;
+    // Skip API calls if data was already loaded from the inline upload response
+    if (skipNextFetch.current) {
+      skipNextFetch.current = false;
+      return;
+    }
     setLoading(true);
     Promise.all([
       apiFetch<Run>(`/runs/${runId}`),
@@ -517,6 +525,7 @@ export default function Dashboard() {
       operator_id: "", started_at: null, completed_at: null,
     };
     setRuns(prev => [runEntry, ...prev.filter(r => r.run_id !== newRunId)]);
+    skipNextFetch.current = true;
     setRunId(newRunId);
     setRunDetail(runEntry);
     setRecon(uploadResult.reconciliation ?? []);
