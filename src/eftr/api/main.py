@@ -9,11 +9,16 @@ from src.eftr.api.routers import reconciliation, reports, rules, runs
 
 def _bootstrap():
     """Create directories, initialise DB tables, seed rules if empty."""
+    from config.settings import settings
     for d in [
-        "data/raw/eft", "data/raw/reported", "data/raw/uploads",
-        "data/processed", "data/exports", "data/quarantine",
+        Path(settings.data_raw_dir) / "eft",
+        Path(settings.data_raw_dir) / "reported",
+        Path(settings.data_raw_dir) / "uploads",
+        Path(settings.data_processed_dir),
+        Path(settings.data_exports_dir),
+        Path(settings.data_quarantine_dir),
     ]:
-        Path(d).mkdir(parents=True, exist_ok=True)
+        d.mkdir(parents=True, exist_ok=True)
 
     from config.database import Base, engine
     import src.eftr.models.eft_transaction      # noqa: F401
