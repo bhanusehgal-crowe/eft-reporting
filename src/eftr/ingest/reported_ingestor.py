@@ -94,6 +94,6 @@ class ReportedIngestor(BaseIngestor):
     def _snapshot(self, df: pd.DataFrame, source_file: Path) -> str:
         snapshot_dir = Path(settings.data_processed_dir) / "reported"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        path = snapshot_dir / f"{self.run_id}_reported.parquet"
+        path = snapshot_dir / f"{self.run_id}_reported.csv"
         save_parquet(df, path)
         return str(path)

@@ -113,6 +113,6 @@ class EFTIngestor(BaseIngestor):
     def _snapshot(self, df: pd.DataFrame, source_file: Path) -> str:
         snapshot_dir = Path(settings.data_processed_dir) / "eft"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
-        path = snapshot_dir / f"{self.run_id}_eft.parquet"
+        path = snapshot_dir / f"{self.run_id}_eft.csv"
         save_parquet(df, path)
         return str(path)

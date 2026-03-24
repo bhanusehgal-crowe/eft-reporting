@@ -34,8 +34,8 @@ class ReperformanceEngine:
         self.session.add(entry)
 
     def _load_data(self) -> tuple[pd.DataFrame, pd.DataFrame]:
-        eft_path = Path(settings.data_processed_dir) / "eft" / f"{self.run_id}_eft.parquet"
-        rep_path = Path(settings.data_processed_dir) / "reported" / f"{self.run_id}_reported.parquet"
+        eft_path = Path(settings.data_processed_dir) / "eft" / f"{self.run_id}_eft.csv"
+        rep_path = Path(settings.data_processed_dir) / "reported" / f"{self.run_id}_reported.csv"
         eft_df = load_parquet(eft_path) if eft_path.exists() else pd.DataFrame()
         rep_df = load_parquet(rep_path) if rep_path.exists() else pd.DataFrame()
         return eft_df, rep_df

@@ -40,11 +40,11 @@ class AggregationEngine:
         self.session.add(entry)
 
     def _load_eft(self) -> pd.DataFrame:
-        path = Path(settings.data_processed_dir) / "eft" / f"{self.run_id}_eft.parquet"
+        path = Path(settings.data_processed_dir) / "eft" / f"{self.run_id}_eft.csv"
         return load_parquet(path) if path.exists() else pd.DataFrame()
 
     def _load_reported(self) -> pd.DataFrame:
-        path = Path(settings.data_processed_dir) / "reported" / f"{self.run_id}_reported.parquet"
+        path = Path(settings.data_processed_dir) / "reported" / f"{self.run_id}_reported.csv"
         return load_parquet(path) if path.exists() else pd.DataFrame()
 
     def _get_party_id(self, row: pd.Series) -> str:
