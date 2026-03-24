@@ -10,7 +10,7 @@ import {
   LayoutDashboard, ClipboardList, Scale, ScrollText, Menu, X,
   TrendingUp, TrendingDown, ChevronDown, BookOpen, Clock,
   CheckCheck, MessageSquarePlus, ArrowUpRight, Ban, Gavel,
-  ChevronRight, Copy, Download,
+  ChevronRight, Copy, Download, ListChecks,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -439,6 +439,7 @@ export default function Dashboard() {
   const [actionForm, setActionForm] = useState<string | null>(null); // which form is open
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [actionSaving, setActionSaving] = useState(false);
+  const [queueTab, setQueueTab] = useState("all");
   const skipNextFetch = useRef(false);
 
   function actionsToMap(list: ComplianceAction[]): Record<string, ComplianceAction> {
@@ -529,13 +530,20 @@ export default function Dashboard() {
     .map(([name, count], i) => ({ name, count, fill: C.chart[i % C.chart.length] }));
 
   // ── Sidebar nav items ──────────────────────────────────────────
+  // Badge count for Action Queue — findings without a filed/resolved action
+  const openActionCount = findings.filter(f =>
+    ["BREACH", "WARN"].includes(f.severity) &&
+    !["filed", "resolved"].includes(actions[f.finding_id]?.status ?? "open")
+  ).length;
+
   const navItems = [
-    { id: "overview",  icon: LayoutDashboard, label: "Overview" },
-    { id: "missed",    icon: FileX,           label: "Missed Reports" },
-    { id: "findings",  icon: ShieldAlert,     label: "Rule Findings" },
-    { id: "reperform", icon: Scale,           label: "Reperformance" },
-    { id: "audit",     icon: ScrollText,      label: "Audit Log" },
-    { id: "memo",      icon: BookOpen,        label: "Manager Memo" },
+    { id: "overview",  icon: LayoutDashboard, label: "Overview",       badge: 0 },
+    { id: "queue",     icon: ListChecks,      label: "Action Queue",   badge: openActionCount },
+    { id: "missed",    icon: FileX,           label: "Missed Reports", badge: 0 },
+    { id: "findings",  icon: ShieldAlert,     label: "Rule Findings",  badge: 0 },
+    { id: "reperform", icon: Scale,           label: "Reperformance",  badge: 0 },
+    { id: "audit",     icon: ScrollText,      label: "Audit Log",      badge: 0 },
+    { id: "memo",      icon: BookOpen,        label: "Manager Memo",   badge: 0 },
   ];
 
   // ── Filtered data ──────────────────────────────────────────────
@@ -662,8 +670,24 @@ export default function Dashboard() {
                 background: active ? "rgba(139,92,246,0.2)" : "transparent",
                 color: active ? C.missed[0] : "rgba(255,255,255,0.6)",
               }}>
-              <item.icon size={18} className="flex-shrink-0" />
-              {sidebarOpen && <span className="text-sm font-medium">{item.label}</span>}
+              <div className="relative flex-shrink-0">
+                <item.icon size={18} />
+                {item.badge > 0 && !sidebarOpen && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full text-white flex items-center justify-center"
+                    style={{ fontSize: 9, background: C.breach[0] }}>
+                    {item.badge > 9 ? "9+" : item.badge}
+                  </span>
+                )}
+              </div>
+              {sidebarOpen && (
+                <span className="text-sm font-medium flex-1">{item.label}</span>
+              )}
+              {sidebarOpen && item.badge > 0 && (
+                <span className="rounded-full px-1.5 py-0.5 text-white font-bold"
+                  style={{ fontSize: 10, background: C.breach[0], lineHeight: 1.4 }}>
+                  {item.badge}
+                </span>
+              )}
             </button>
           );
         })}
@@ -1224,6 +1248,153 @@ export default function Dashboard() {
     </TablePanel>
   );
 
+  // ── Action Queue page ──────────────────────────────────────────
+  const QUEUE_TABS = [
+    { id: "all",         label: "All" },
+    { id: "open",        label: "Open" },
+    { id: "escalated",   label: "Escalated" },
+    { id: "under_review",label: "Under Review" },
+    { id: "disputed",    label: "Disputed" },
+    { id: "filed",       label: "Filed" },
+    { id: "resolved",    label: "Resolved" },
+  ];
+
+  // Build queue rows — every BREACH/WARN finding, joined with its action
+  const queueRows = findings
+    .filter(f => ["BREACH", "WARN"].includes(f.severity))
+    .map(f => ({ finding: f, action: actions[f.finding_id] ?? null }))
+    .filter(({ action }) =>
+      queueTab === "all" ||
+      (action ? action.status === queueTab : queueTab === "open")
+    )
+    .sort((a, b) => {
+      // Priority sort: BREACH before WARN, then by deadline (soonest first)
+      if (a.finding.severity !== b.finding.severity)
+        return a.finding.severity === "BREACH" ? -1 : 1;
+      const dlA = computeDeadline(a.finding);
+      const dlB = computeDeadline(b.finding);
+      if (dlA && dlB) return dlA.getTime() - dlB.getTime();
+      if (dlA) return -1;
+      if (dlB) return 1;
+      return 0;
+    });
+
+  // Tab counts
+  const tabCounts: Record<string, number> = { all: 0 };
+  findings.filter(f => ["BREACH", "WARN"].includes(f.severity)).forEach(f => {
+    tabCounts.all = (tabCounts.all ?? 0) + 1;
+    const st = actions[f.finding_id]?.status ?? "open";
+    tabCounts[st] = (tabCounts[st] ?? 0) + 1;
+  });
+
+  const actionQueuePage = (
+    <div className="flex flex-col gap-4">
+      {/* Header KPIs */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {[
+          { label: "Total Items",  value: tabCounts.all ?? 0,         color: C.text },
+          { label: "Open",         value: tabCounts.open ?? 0,        color: C.breach[0] },
+          { label: "Escalated",    value: tabCounts.escalated ?? 0,   color: C.missed[0] },
+          { label: "Filed / Done", value: (tabCounts.filed ?? 0) + (tabCounts.resolved ?? 0), color: C.matched[0] },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="rounded-2xl p-4 border flex flex-col gap-1"
+            style={{ background: C.surface, borderColor: C.border }}>
+            <p className="text-xs uppercase tracking-wide" style={{ color: C.muted }}>{label}</p>
+            <p className="text-3xl font-bold" style={{ color }}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Tabs + table */}
+      <div className="rounded-2xl border overflow-hidden" style={{ background: C.surface, borderColor: C.border }}>
+        {/* Tab bar */}
+        <div className="flex items-center gap-1 px-4 pt-3 pb-0 border-b overflow-x-auto"
+          style={{ borderColor: C.border }}>
+          {QUEUE_TABS.map(t => {
+            const count = t.id === "all" ? (tabCounts.all ?? 0)
+              : t.id === "open" ? (tabCounts.open ?? 0)
+              : (tabCounts[t.id] ?? 0);
+            if (t.id !== "all" && count === 0) return null;
+            const active = queueTab === t.id;
+            return (
+              <button key={t.id} onClick={() => setQueueTab(t.id)}
+                className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-t-lg border-b-2 whitespace-nowrap transition-colors"
+                style={{
+                  borderBottomColor: active ? C.missed[0] : "transparent",
+                  color: active ? C.missed[0] : C.muted,
+                  background: "transparent",
+                }}>
+                {t.label}
+                <span className="rounded-full px-1.5 py-0.5 text-white"
+                  style={{ fontSize: 10, background: active ? C.missed[0] : C.border, color: active ? "#fff" : C.muted, lineHeight: 1.6 }}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Table */}
+        <div style={{ overflowX: "auto" }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr>
+                <Th>Severity</Th>
+                <Th>Rule</Th>
+                <Th>Transaction</Th>
+                <Th>Deadline</Th>
+                <Th>Status</Th>
+                <Th>Notes / Ref</Th>
+                <Th>Operator</Th>
+                <Th>Action</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {queueRows.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="text-center py-12" style={{ color: C.muted }}>
+                    <ListChecks size={32} className="mx-auto mb-2 opacity-30" />
+                    <p className="text-sm">No items in this tab</p>
+                  </td>
+                </tr>
+              ) : queueRows.map(({ finding: f, action: a }) => (
+                <tr key={f.finding_id}
+                  className="hover:bg-gray-50 transition-colors cursor-pointer"
+                  onClick={() => { setSelectedFinding(f); setActionForm(null); setFormData({}); setPage("findings"); }}>
+                  <Td><SevBadge sev={f.severity} /></Td>
+                  <Td><span className="font-mono text-xs">{f.rule_code.replace("FINTRAC_", "")}</span></Td>
+                  <Td><span className="font-mono text-xs">{f.transaction_id ?? "—"}</span></Td>
+                  <Td><DeadlinePill finding={f} action={a ?? undefined} /></Td>
+                  <Td><ActionStatusBadge status={a?.status ?? "open"} /></Td>
+                  <Td>
+                    <span className="text-xs" style={{ color: C.muted }}>
+                      {a?.filed_ref
+                        ? <><span className="font-semibold text-xs" style={{ color: C.matched[0] }}>Ref: </span>{a.filed_ref}</>
+                        : a?.notes
+                          ? a.notes.slice(0, 50) + (a.notes.length > 50 ? "…" : "")
+                          : a?.decision
+                            ? <span className="capitalize font-semibold">{a.decision}</span>
+                            : "—"}
+                    </span>
+                  </Td>
+                  <Td><span className="text-xs">{a?.operator_id || "—"}</span></Td>
+                  <Td>
+                    <button
+                      onClick={e => { e.stopPropagation(); setSelectedFinding(f); setActionForm(null); setFormData({}); setPage("findings"); }}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold text-white"
+                      style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
+                      Review <ChevronRight size={12} />
+                    </button>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+
   // ── Manager Memo page ──────────────────────────────────────────
   const memoPage = !memo ? (
     <div className="rounded-2xl border p-12 text-center" style={{ background: C.surface, borderColor: C.border }}>
@@ -1394,12 +1565,13 @@ export default function Dashboard() {
   );
 
   const pages: Record<string, React.ReactNode> = {
-    overview: overviewPage,
-    missed:   missedPage,
-    findings: findingsPage,
+    overview:  overviewPage,
+    queue:     actionQueuePage,
+    missed:    missedPage,
+    findings:  findingsPage,
     reperform: reperformPage,
-    audit:    auditPage,
-    memo:     memoPage,
+    audit:     auditPage,
+    memo:      memoPage,
   };
 
   return (
