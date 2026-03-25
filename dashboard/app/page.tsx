@@ -10,7 +10,9 @@ import {
   LayoutDashboard, ClipboardList, Scale, ScrollText, Menu, X,
   TrendingUp, TrendingDown, ChevronDown, BookOpen, Clock,
   CheckCheck, MessageSquarePlus, ArrowUpRight, Ban, Gavel,
-  ChevronRight, Copy, Download, ListChecks, Trash2,
+  ChevronRight, Copy, Download, ListChecks, Trash2, Share2, Link,
+  FileText, Send, ClipboardCheck, UserCheck, RefreshCw, ExternalLink,
+  ChevronLeft, AlertCircle, Pencil,
 } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -65,6 +67,33 @@ interface ComplianceAction {
   notes: string | null; filed_ref: string | null; decision: string | null;
   deadline: string | null; updated_at: string | null;
 }
+interface ValidationCheck {
+  id: string; label: string; passed: boolean; category: string;
+}
+interface ValidationResult {
+  passed: boolean; checks: ValidationCheck[]; errors: string[];
+}
+interface SubmissionEvent {
+  event_id: string; submission_id: string; operator_id: string;
+  event_type: string; from_status: string | null; to_status: string | null;
+  notes: string | null; created_at: string;
+}
+interface EFTRSubmission {
+  submission_id: string; finding_id: string; action_id: string | null;
+  run_id: string; transaction_id: string | null; status: string;
+  maker_id: string; checker_id: string | null;
+  report_data: Record<string, string> | null;
+  validation_passed: boolean | null; validation_result: ValidationResult | null;
+  report_filename: string | null; has_xml: boolean;
+  maker_notes: string | null; checker_notes: string | null;
+  portal_ref: string | null; submitted_at: string | null;
+  ack_number: string | null; ack_received_at: string | null;
+  fintrac_rejection_code: string | null; fintrac_rejection_detail: string | null;
+  amendment_of_id: string | null; amendment_number: number; amendment_reason: string | null;
+  created_at: string; updated_at: string;
+  events?: SubmissionEvent[];
+}
+
 interface MemoBreachEntry {
   rule: string; count: number; action_required: string;
   earliest_deadline?: string; days_remaining?: number;
@@ -438,6 +467,736 @@ function UploadModal({
   );
 }
 
+// ── Filing Wizard ────────────────────────────────────────────────
+const WIZARD_STEPS = [
+  { id: "review",    label: "Review Details",      icon: Pencil },
+  { id: "validate",  label: "Pre-Filing Checks",   icon: ClipboardCheck },
+  { id: "generate",  label: "Generate Document",   icon: FileText },
+  { id: "approve",   label: "Maker-Checker Review",icon: UserCheck },
+  { id: "upload",    label: "Upload to F2R",        icon: Send },
+  { id: "ack",       label: "Record Acknowledgement", icon: CheckCircle2 },
+];
+
+function statusToStep(status: string): number {
+  const map: Record<string, number> = {
+    DRAFT: 0, VALIDATED: 2, FILE_READY: 3, PENDING_APPROVAL: 3,
+    CHECKER_REJECTED: 0, APPROVED: 4, SUBMITTED: 5, ACKNOWLEDGED: 5,
+    FINTRAC_REJECTED: 5,
+  };
+  return map[status] ?? 0;
+}
+
+function FilingWizard({
+  finding, runId, operatorId, onClose, onComplete,
+}: {
+  finding: Finding;
+  runId: string;
+  operatorId: string;
+  onClose: () => void;
+  onComplete: (sub: EFTRSubmission) => void;
+}) {
+  const [sub, setSub] = useState<EFTRSubmission | null>(null);
+  const [step, setStep] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [reportData, setReportData] = useState<Record<string, string>>({});
+  const [xmlPreview, setXmlPreview] = useState("");
+  const [localValidation, setLocalValidation] = useState<ValidationResult | null>(null);
+  const [checkerInput, setCheckerInput] = useState({ operator_id: "", notes: "", rejection_reason: "" });
+  const [portalRef, setPortalRef] = useState("");
+  const [ackNumber, setAckNumber] = useState("");
+
+  // Load or create submission on mount
+  useEffect(() => {
+    setBusy(true);
+    fetch(`${API}/submissions?finding_id=${finding.finding_id}&run_id=${runId}`)
+      .then(r => r.json())
+      .then((list: EFTRSubmission[]) => {
+        const active = list.find(s => !["ACKNOWLEDGED", "FINTRAC_REJECTED"].includes(s.status));
+        if (active) {
+          setSub(active);
+          setReportData(active.report_data ?? {});
+          setStep(statusToStep(active.status));
+          if (active.validation_result) setLocalValidation(active.validation_result);
+        } else {
+          // Create new submission
+          return fetch(`${API}/submissions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ finding_id: finding.finding_id, run_id: runId, operator_id: operatorId }),
+          }).then(r => r.json()).then((newSub: EFTRSubmission) => {
+            setSub(newSub);
+            setReportData(newSub.report_data ?? {});
+            setStep(0);
+          });
+        }
+      })
+      .catch(() => setErr("Failed to initialise submission"))
+      .finally(() => setBusy(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function apiPost(path: string, body: object) {
+    const r = await fetch(`${API}${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const t = await r.text(); throw new Error(t); }
+    return r.json();
+  }
+  async function apiPut(path: string, body: object) {
+    const r = await fetch(`${API}${path}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const t = await r.text(); throw new Error(t); }
+    return r.json();
+  }
+
+  function rd(field: string) { return reportData[field] ?? ""; }
+  function setRd(field: string, val: string) { setReportData(p => ({ ...p, [field]: val })); }
+
+  async function saveReportData() {
+    if (!sub) return;
+    setBusy(true); setErr("");
+    try {
+      const updated: EFTRSubmission = await apiPut(`/submissions/${sub.submission_id}/report-data`, {
+        report_data: reportData, operator_id: operatorId,
+      });
+      setSub(updated);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : "Save failed");
+    } finally { setBusy(false); }
+  }
+
+  async function runValidation() {
+    if (!sub) return;
+    setBusy(true); setErr("");
+    try {
+      const result: EFTRSubmission & { validation_result: ValidationResult } =
+        await apiPost(`/submissions/${sub.submission_id}/validate`, { operator_id: operatorId });
+      setSub(result); setLocalValidation(result.validation_result);
+      if (result.validation_passed) setStep(2);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Validation failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function generateFile() {
+    if (!sub) return;
+    setBusy(true); setErr("");
+    try {
+      const updated: EFTRSubmission = await apiPost(`/submissions/${sub.submission_id}/generate-file`, { operator_id: operatorId });
+      setSub(updated);
+      // Fetch the XML for preview
+      const r = await fetch(`${API}/submissions/${sub.submission_id}/download`);
+      const xml = await r.text();
+      setXmlPreview(xml);
+      setStep(3);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "File generation failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function submitForApproval() {
+    if (!sub) return;
+    setBusy(true); setErr("");
+    try {
+      const updated: EFTRSubmission = await apiPost(`/submissions/${sub.submission_id}/submit-for-approval`, {
+        operator_id: operatorId, maker_notes: reportData.maker_notes || "",
+      });
+      setSub(updated); setStep(3);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Submit failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function approveSubmission() {
+    if (!sub) return;
+    setBusy(true); setErr("");
+    try {
+      const updated: EFTRSubmission = await apiPost(`/submissions/${sub.submission_id}/approve`, {
+        operator_id: checkerInput.operator_id || operatorId,
+        checker_notes: checkerInput.notes,
+      });
+      setSub(updated); setStep(4);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Approval failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function rejectSubmission() {
+    if (!sub) return;
+    if (!checkerInput.rejection_reason.trim()) { setErr("Rejection reason is required"); return; }
+    setBusy(true); setErr("");
+    try {
+      const updated: EFTRSubmission = await apiPost(`/submissions/${sub.submission_id}/reject`, {
+        operator_id: checkerInput.operator_id || operatorId,
+        rejection_reason: checkerInput.rejection_reason,
+      });
+      setSub(updated); setStep(0);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Reject failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function confirmUpload() {
+    if (!sub || !portalRef.trim()) { setErr("Portal reference number is required"); return; }
+    setBusy(true); setErr("");
+    try {
+      const updated: EFTRSubmission = await apiPost(`/submissions/${sub.submission_id}/confirm-upload`, {
+        operator_id: operatorId, portal_ref: portalRef,
+      });
+      setSub(updated); setStep(5); onComplete(updated);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Upload confirmation failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function recordAck() {
+    if (!sub || !ackNumber.trim()) { setErr("Acknowledgement number is required"); return; }
+    setBusy(true); setErr("");
+    try {
+      const updated: EFTRSubmission = await apiPost(`/submissions/${sub.submission_id}/acknowledge`, {
+        operator_id: operatorId, ack_number: ackNumber,
+      });
+      setSub(updated); onComplete(updated);
+    } catch (e: unknown) { setErr(e instanceof Error ? e.message : "Acknowledgement failed"); }
+    finally { setBusy(false); }
+  }
+
+  function downloadXml() {
+    if (!sub) return;
+    const xml = xmlPreview;
+    const blob = new Blob([xml], { type: "application/xml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = sub.report_filename ?? `EFTR_${sub.transaction_id ?? "unknown"}.xml`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const FormField = ({
+    label, field, placeholder, required, readOnly,
+  }: {
+    label: string; field: string; placeholder?: string; required?: boolean; readOnly?: boolean;
+  }) => (
+    <div>
+      <label className="block text-xs font-semibold mb-1" style={{ color: C.muted }}>
+        {label}{required && <span className="text-red-500 ml-0.5">*</span>}
+      </label>
+      <input
+        value={rd(field)}
+        onChange={e => !readOnly && setRd(field, e.target.value)}
+        placeholder={placeholder ?? label}
+        readOnly={readOnly}
+        className={`w-full rounded-lg border px-3 py-2 text-xs outline-none ${readOnly ? "bg-gray-50" : "bg-white"}`}
+        style={{ borderColor: C.border, color: C.text }}
+      />
+    </div>
+  );
+
+  const isFinal = sub?.status === "ACKNOWLEDGED";
+  const isRejected = sub?.status === "CHECKER_REJECTED";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.55)" }}>
+      <div className="relative w-full max-w-3xl max-h-[92vh] flex flex-col rounded-2xl shadow-2xl overflow-hidden"
+        style={{ background: C.surface }}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b"
+          style={{ borderColor: C.border, background: `linear-gradient(135deg, ${C.text}, #2D2B6B)` }}>
+          <div>
+            <p className="text-white font-bold text-base">EFTR Filing Workflow</p>
+            <p className="text-xs mt-0.5" style={{ color: "rgba(255,255,255,0.6)" }}>
+              {finding.transaction_id} · FINTRAC EFT Report
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {sub && (
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold"
+                style={{
+                  background: sub.status === "ACKNOWLEDGED" ? C.matched[0] :
+                    sub.status.includes("REJECTED") ? C.breach[0] :
+                    sub.status === "PENDING_APPROVAL" ? C.warn[0] : C.chart[1],
+                  color: "#fff",
+                }}>
+                {sub.status.replace(/_/g, " ")}
+              </span>
+            )}
+            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-white/10 text-white">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+
+        {/* Step indicator */}
+        <div className="flex border-b" style={{ borderColor: C.border }}>
+          {WIZARD_STEPS.map((s, i) => {
+            const done = i < step;
+            const active = i === step;
+            return (
+              <div key={s.id} className="flex-1 flex flex-col items-center gap-1 py-3 px-1"
+                style={{
+                  background: active ? "#EEF2FF" : done ? "#F0FDF4" : C.surface,
+                  borderBottom: active ? `2px solid ${C.missed[0]}` : "2px solid transparent",
+                }}>
+                <div className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+                  style={{
+                    background: active ? C.missed[0] : done ? C.matched[0] : C.border,
+                    color: (active || done) ? "#fff" : C.muted,
+                  }}>
+                  {done ? <CheckCheck size={12} /> : i + 1}
+                </div>
+                <span className="text-xs text-center hidden sm:block leading-tight"
+                  style={{ color: active ? C.missed[0] : done ? C.matched[0] : C.muted }}>
+                  {s.label}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {busy && (
+            <div className="flex items-center justify-center py-12">
+              <div className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin"
+                style={{ borderColor: C.missed[0], borderTopColor: "transparent" }} />
+            </div>
+          )}
+          {!busy && isFinal && (
+            <div className="text-center py-10">
+              <div className="w-20 h-20 rounded-full mx-auto mb-4 flex items-center justify-center"
+                style={{ background: `linear-gradient(135deg, ${C.matched[0]}, ${C.matched[1]})` }}>
+                <CheckCircle2 size={40} className="text-white" />
+              </div>
+              <h3 className="font-bold text-xl mb-2" style={{ color: C.text }}>Filing Complete</h3>
+              <p className="text-sm mb-2" style={{ color: C.muted }}>
+                FINTRAC acknowledgement recorded successfully.
+              </p>
+              {sub?.ack_number && (
+                <p className="text-sm font-semibold" style={{ color: C.matched[0] }}>
+                  ACK#: {sub.ack_number}
+                </p>
+              )}
+              {sub?.portal_ref && (
+                <p className="text-xs mt-1" style={{ color: C.muted }}>Portal Ref: {sub.portal_ref}</p>
+              )}
+              <button onClick={onClose} className="mt-6 px-6 py-2.5 rounded-xl text-sm font-semibold text-white"
+                style={{ background: `linear-gradient(135deg, ${C.matched[0]}, ${C.matched[1]})` }}>
+                Close
+              </button>
+            </div>
+          )}
+          {!busy && !isFinal && (
+            <>
+              {/* Checker rejected banner */}
+              {isRejected && (
+                <div className="mb-4 rounded-xl p-4 flex items-start gap-3 border"
+                  style={{ background: "#FEF2F2", borderColor: "#FECACA" }}>
+                  <AlertCircle size={16} style={{ color: C.breach[0], flexShrink: 0, marginTop: 2 }} />
+                  <div>
+                    <p className="text-sm font-semibold" style={{ color: C.breach[0] }}>Returned by Checker</p>
+                    <p className="text-xs mt-0.5" style={{ color: C.text }}>{sub?.checker_notes}</p>
+                    <p className="text-xs mt-1" style={{ color: C.muted }}>Please correct the issues below and re-submit.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 0: Review & Edit */}
+              {step === 0 && (
+                <div className="flex flex-col gap-5">
+                  <div>
+                    <h3 className="font-semibold text-sm mb-3" style={{ color: C.text }}>Transaction Details (Pre-filled)</h3>
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField label="Transaction ID" field="transaction_id" readOnly />
+                      <FormField label="Transaction Date" field="transaction_date" readOnly />
+                      <FormField label="Direction" field="direction" readOnly />
+                      <FormField label="Amount" field="amount" readOnly />
+                      <FormField label="Currency" field="currency_code" readOnly />
+                      <FormField label="CAD Equivalent" field="cad_amount" readOnly />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm mb-1" style={{ color: C.text }}>Parties (Pre-filled)</h3>
+                    <p className="text-xs mb-3" style={{ color: C.muted }}>Verify originator and beneficiary details match source records.</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField label="Originator Name" field="originator_name" />
+                      <FormField label="Originator Account" field="originator_account" />
+                      <FormField label="Originator Address" field="originator_address" />
+                      <div />
+                      <FormField label="Beneficiary Name" field="beneficiary_name" />
+                      <FormField label="Beneficiary Account" field="beneficiary_account" />
+                      <FormField label="Beneficiary Address" field="beneficiary_address" />
+                      <FormField label="Beneficiary Institution" field="beneficiary_institution" placeholder="Receiving bank name" />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm mb-1" style={{ color: C.text }}>Reporting Entity</h3>
+                    <p className="text-xs mb-3" style={{ color: C.muted }}>
+                      Your institution&apos;s FINTRAC registration details. These will be saved for future filings.
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField label="Reporting Entity Number" field="reporting_entity_number" placeholder="e.g. 10001234" required />
+                      <FormField label="Institution Name" field="reporting_entity_name" placeholder="Full legal name" required />
+                      <FormField label="Compliance Officer Name" field="contact_name" required />
+                      <FormField label="Contact Phone" field="contact_phone" placeholder="+1-416-555-0100" required />
+                      <FormField label="Contact Email" field="contact_email" placeholder="compliance@bank.ca" required />
+                      <div />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm mb-1" style={{ color: C.text }}>Filing Remarks</h3>
+                    <textarea
+                      value={rd("remarks")} onChange={e => setRd("remarks", e.target.value)}
+                      placeholder="Optional remarks for FINTRAC (e.g. late filing explanation)"
+                      rows={2} className="w-full rounded-lg border px-3 py-2 text-xs outline-none resize-none"
+                      style={{ borderColor: C.border, color: C.text }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 1: Validate */}
+              {step === 1 && (
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="font-semibold text-sm" style={{ color: C.text }}>Pre-Submission Validation</h3>
+                      <p className="text-xs mt-1" style={{ color: C.muted }}>
+                        All checks must pass before generating the filing document.
+                      </p>
+                    </div>
+                    <button onClick={runValidation} disabled={busy}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                      style={{ background: C.chart[1] }}>
+                      <RefreshCw size={12} />Re-run Checks
+                    </button>
+                  </div>
+                  {localValidation && (
+                    <>
+                      <div className={`rounded-xl p-3 flex items-center gap-2 ${localValidation.passed ? "bg-green-50" : "bg-red-50"}`}
+                        style={{ border: `1px solid ${localValidation.passed ? "#BBF7D0" : "#FECACA"}` }}>
+                        {localValidation.passed
+                          ? <CheckCircle2 size={16} style={{ color: C.matched[0] }} />
+                          : <AlertTriangle size={16} style={{ color: C.breach[0] }} />}
+                        <p className="text-sm font-semibold" style={{ color: localValidation.passed ? C.matched[0] : C.breach[0] }}>
+                          {localValidation.passed ? "All checks passed — ready to generate filing document" : `${localValidation.errors.length} issue(s) require attention`}
+                        </p>
+                      </div>
+                      {/* Group by category */}
+                      {Array.from(new Set(localValidation.checks.map(c => c.category))).map(cat => (
+                        <div key={cat}>
+                          <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>{cat}</p>
+                          <div className="flex flex-col gap-1.5">
+                            {localValidation.checks.filter(c => c.category === cat).map(c => (
+                              <div key={c.id} className="flex items-center gap-2 rounded-lg px-3 py-2"
+                                style={{ background: c.passed ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${c.passed ? "#BBF7D0" : "#FECACA"}` }}>
+                                {c.passed
+                                  ? <CheckCheck size={13} style={{ color: C.matched[0], flexShrink: 0 }} />
+                                  : <X size={13} style={{ color: C.breach[0], flexShrink: 0 }} />}
+                                <span className="text-xs" style={{ color: c.passed ? C.matched[0] : C.breach[0] }}>{c.label}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                  {!localValidation && (
+                    <div className="text-center py-8 text-sm" style={{ color: C.muted }}>
+                      Click &quot;Re-run Checks&quot; to validate the report data.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* STEP 2: Generate file */}
+              {step === 2 && (
+                <div className="flex flex-col gap-4">
+                  <div>
+                    <h3 className="font-semibold text-sm" style={{ color: C.text }}>Generate FINTRAC Filing Document</h3>
+                    <p className="text-xs mt-1" style={{ color: C.muted }}>
+                      The system will generate an XML file in FINTRAC&apos;s EFT report schema.
+                      Download it and upload manually to the F2R portal, or proceed through the workflow below.
+                    </p>
+                  </div>
+                  {(sub?.status === "FILE_READY" || sub?.status === "PENDING_APPROVAL") && xmlPreview && (
+                    <>
+                      <div className="rounded-xl p-3 flex items-center justify-between"
+                        style={{ background: "#F0FDF4", border: "1px solid #BBF7D0" }}>
+                        <div className="flex items-center gap-2">
+                          <FileText size={16} style={{ color: C.matched[0] }} />
+                          <span className="text-sm font-semibold" style={{ color: C.matched[0] }}>
+                            {sub.report_filename}
+                          </span>
+                        </div>
+                        <button onClick={downloadXml}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-white"
+                          style={{ background: C.matched[0] }}>
+                          <Download size={12} />Download XML
+                        </button>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>XML Preview</p>
+                        <pre className="rounded-xl p-4 text-xs overflow-x-auto overflow-y-auto max-h-52 font-mono"
+                          style={{ background: "#0F172A", color: "#94A3B8", border: `1px solid ${C.border}` }}>
+                          {xmlPreview}
+                        </pre>
+                      </div>
+                    </>
+                  )}
+                  {sub?.status === "VALIDATED" && !xmlPreview && (
+                    <div className="rounded-xl p-8 text-center border border-dashed" style={{ borderColor: C.border }}>
+                      <FileText size={32} style={{ color: C.muted, margin: "0 auto 12px" }} />
+                      <p className="text-sm font-semibold mb-1" style={{ color: C.text }}>Ready to generate</p>
+                      <p className="text-xs mb-4" style={{ color: C.muted }}>All pre-submission checks passed.</p>
+                    </div>
+                  )}
+                  {/* Load XML if already generated */}
+                  {(sub?.status === "FILE_READY" || sub?.status === "PENDING_APPROVAL") && !xmlPreview && (
+                    <button onClick={async () => {
+                      const r = await fetch(`${API}/submissions/${sub!.submission_id}/download`);
+                      setXmlPreview(await r.text());
+                    }}
+                      className="text-xs underline self-start" style={{ color: C.chart[1] }}>
+                      Load XML preview
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* STEP 3: Maker-Checker approval */}
+              {step === 3 && (
+                <div className="flex flex-col gap-4">
+                  <h3 className="font-semibold text-sm" style={{ color: C.text }}>Dual-Control Approval</h3>
+                  {sub?.status === "FILE_READY" && (
+                    <>
+                      <div className="rounded-xl p-4 border" style={{ background: "#F8FAFC", borderColor: C.border }}>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Maker Submission</p>
+                        <p className="text-xs mb-3" style={{ color: C.text }}>
+                          You are submitting the generated FINTRAC XML for review by a second compliance officer (checker).
+                          Confirm the filing details are correct before proceeding.
+                        </p>
+                        <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                          <span style={{ color: C.muted }}>Transaction</span><span className="font-mono font-semibold">{sub.transaction_id}</span>
+                          <span style={{ color: C.muted }}>CAD Amount</span><span className="font-semibold">${Number(rd("cad_amount") || 0).toLocaleString("en-CA", { minimumFractionDigits: 2 })}</span>
+                          <span style={{ color: C.muted }}>Direction</span><span>{rd("direction")}</span>
+                          <span style={{ color: C.muted }}>Txn Date</span><span>{rd("transaction_date")}</span>
+                          <span style={{ color: C.muted }}>File</span><span className="font-mono">{sub.report_filename}</span>
+                        </div>
+                        <textarea value={rd("maker_notes") ?? ""} onChange={e => setRd("maker_notes", e.target.value)}
+                          placeholder="Maker notes (optional — e.g. late filing explanation)" rows={2}
+                          className="w-full rounded-lg border px-3 py-2 text-xs outline-none resize-none"
+                          style={{ borderColor: C.border }} />
+                      </div>
+                    </>
+                  )}
+                  {sub?.status === "PENDING_APPROVAL" && (
+                    <div className="flex flex-col gap-3">
+                      <div className="rounded-xl p-4 border" style={{ background: "#FFFBEB", borderColor: "#FDE68A" }}>
+                        <p className="text-xs font-semibold" style={{ color: C.warn[0] }}>Awaiting Checker Review</p>
+                        <p className="text-xs mt-1" style={{ color: C.text }}>
+                          Submitted by <strong>{sub.maker_id}</strong>. A compliance officer with checker authority must approve this filing.
+                        </p>
+                        {sub.maker_notes && <p className="text-xs mt-2 italic" style={{ color: C.muted }}>Maker note: {sub.maker_notes}</p>}
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Checker Action</p>
+                        <input value={checkerInput.operator_id} onChange={e => setCheckerInput(p => ({ ...p, operator_id: e.target.value }))}
+                          placeholder="Checker operator ID (leave blank to use your ID)"
+                          className="w-full rounded-lg border px-3 py-2 text-xs outline-none mb-2"
+                          style={{ borderColor: C.border }} />
+                        <textarea value={checkerInput.notes} onChange={e => setCheckerInput(p => ({ ...p, notes: e.target.value }))}
+                          placeholder="Approval notes (optional)" rows={2}
+                          className="w-full rounded-lg border px-3 py-2 text-xs outline-none resize-none mb-2"
+                          style={{ borderColor: C.border }} />
+                        <textarea value={checkerInput.rejection_reason} onChange={e => setCheckerInput(p => ({ ...p, rejection_reason: e.target.value }))}
+                          placeholder="Rejection reason (fill only if sending back to maker)" rows={2}
+                          className="w-full rounded-lg border px-3 py-2 text-xs outline-none resize-none"
+                          style={{ borderColor: C.border }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* STEP 4: Upload to F2R */}
+              {step === 4 && (
+                <div className="flex flex-col gap-4">
+                  <h3 className="font-semibold text-sm" style={{ color: C.text }}>Upload to FINTRAC F2R Portal</h3>
+                  <div className="rounded-xl p-4 border" style={{ background: "#EFF6FF", borderColor: "#BFDBFE" }}>
+                    <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.chart[1] }}>Manual Upload Instructions</p>
+                    <ol className="flex flex-col gap-2 text-xs" style={{ color: C.text }}>
+                      <li className="flex gap-2"><span className="font-bold text-blue-600">1.</span> Download the FINTRAC XML file if you haven&apos;t already.</li>
+                      <li className="flex gap-2"><span className="font-bold text-blue-600">2.</span> Log in to the <strong>FINTRAC F2R portal</strong> at your institution&apos;s secure access point.</li>
+                      <li className="flex gap-2"><span className="font-bold text-blue-600">3.</span> Navigate to <strong>Submit Report → Electronic Funds Transfer Report → Batch Upload</strong>.</li>
+                      <li className="flex gap-2"><span className="font-bold text-blue-600">4.</span> Upload <strong>{sub?.report_filename}</strong> and confirm submission.</li>
+                      <li className="flex gap-2"><span className="font-bold text-blue-600">5.</span> Copy the <strong>portal reference number</strong> from the F2R confirmation screen.</li>
+                      <li className="flex gap-2"><span className="font-bold text-blue-600">6.</span> Enter it below and click &quot;Confirm Upload&quot;.</li>
+                    </ol>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={downloadXml} disabled={!xmlPreview}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border"
+                      style={{ borderColor: C.chart[1], color: C.chart[1] }}>
+                      <Download size={13} />Download XML Again
+                    </button>
+                    <button
+                      onClick={() => window.open("https://f2r.fintrac-canafe.gc.ca", "_blank")}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border"
+                      style={{ borderColor: C.chart[1], color: C.chart[1] }}>
+                      <ExternalLink size={13} />Open F2R Portal
+                    </button>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold mb-1 block" style={{ color: C.muted }}>
+                      F2R Portal Reference Number <span className="text-red-500">*</span>
+                    </label>
+                    <input value={portalRef} onChange={e => setPortalRef(e.target.value)}
+                      placeholder="e.g. F2R-2026-03250001"
+                      className="w-full rounded-lg border px-3 py-2 text-sm outline-none"
+                      style={{ borderColor: C.border }} />
+                    <p className="text-xs mt-1" style={{ color: C.muted }}>
+                      This is the reference number from the F2R portal confirmation screen after upload.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 5: Record Acknowledgement */}
+              {step === 5 && sub?.status === "SUBMITTED" && (
+                <div className="flex flex-col gap-4">
+                  <h3 className="font-semibold text-sm" style={{ color: C.text }}>Record F2R Acknowledgement</h3>
+                  <div className="rounded-xl p-4 border" style={{ background: "#F0FDF4", borderColor: "#BBF7D0" }}>
+                    <p className="text-xs" style={{ color: C.text }}>
+                      <strong>Portal Ref: </strong>{sub.portal_ref} · <strong>Submitted: </strong>
+                      {sub.submitted_at ? new Date(sub.submitted_at).toLocaleString("en-CA") : "—"}
+                    </p>
+                    <p className="text-xs mt-2" style={{ color: C.muted }}>
+                      FINTRAC will send an acknowledgement (ACK) or error notice via the F2R portal within 24 hours.
+                      Once received, enter the ACK number below to complete the audit trail.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold mb-1 block" style={{ color: C.muted }}>
+                      FINTRAC Acknowledgement Number <span className="text-red-500">*</span>
+                    </label>
+                    <input value={ackNumber} onChange={e => setAckNumber(e.target.value)}
+                      placeholder="e.g. ACK-2026-0325-00142"
+                      className="w-full rounded-lg border px-3 py-2 text-sm outline-none"
+                      style={{ borderColor: C.border }} />
+                  </div>
+                  <p className="text-xs" style={{ color: C.muted }}>
+                    If FINTRAC rejects the report, use the &quot;Record Rejection&quot; option on the Submissions page instead.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+
+          {err && (
+            <div className="mt-3 rounded-lg px-3 py-2 text-xs border"
+              style={{ background: "#FEF2F2", borderColor: "#FECACA", color: C.breach[0] }}>
+              {err}
+            </div>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        {!busy && !isFinal && (
+          <div className="flex items-center justify-between px-6 py-4 border-t" style={{ borderColor: C.border }}>
+            <button
+              onClick={() => { if (step > 0) setStep(s => s - 1); else onClose(); }}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold border"
+              style={{ borderColor: C.border, color: C.muted }}>
+              <ChevronLeft size={13} />{step === 0 ? "Cancel" : "Back"}
+            </button>
+
+            <div className="flex gap-2">
+              {/* Step 0: Save & Validate */}
+              {step === 0 && (
+                <button onClick={async () => { await saveReportData(); setStep(1); await runValidation(); }}
+                  disabled={busy}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
+                  Save & Run Checks <ChevronRight size={13} />
+                </button>
+              )}
+              {/* Step 1: Go to generate if passed */}
+              {step === 1 && localValidation?.passed && (
+                <button onClick={() => setStep(2)} disabled={busy}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white"
+                  style={{ background: `linear-gradient(135deg, ${C.matched[0]}, ${C.matched[1]})` }}>
+                  Generate Document <ChevronRight size={13} />
+                </button>
+              )}
+              {/* Step 2: Generate or proceed */}
+              {step === 2 && sub?.status === "VALIDATED" && (
+                <button onClick={generateFile} disabled={busy}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
+                  <FileText size={13} />Generate FINTRAC XML
+                </button>
+              )}
+              {step === 2 && (sub?.status === "FILE_READY" || sub?.status === "PENDING_APPROVAL") && (
+                <button onClick={() => setStep(3)} disabled={busy}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white"
+                  style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
+                  Submit for Approval <ChevronRight size={13} />
+                </button>
+              )}
+              {/* Step 3: Maker submit / Checker approve / reject */}
+              {step === 3 && sub?.status === "FILE_READY" && (
+                <button onClick={submitForApproval} disabled={busy}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${C.warn[0]}, ${C.warn[1]})` }}>
+                  <Send size={13} />Submit for Checker Review
+                </button>
+              )}
+              {step === 3 && sub?.status === "PENDING_APPROVAL" && (
+                <>
+                  <button onClick={rejectSubmission} disabled={busy}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                    style={{ background: C.breach[0] }}>
+                    Send Back
+                  </button>
+                  <button onClick={approveSubmission} disabled={busy}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                    style={{ background: C.matched[0] }}>
+                    <UserCheck size={13} />Approve
+                  </button>
+                </>
+              )}
+              {/* Step 3 → approved, jump to upload */}
+              {step === 3 && sub?.status === "APPROVED" && (
+                <button onClick={() => setStep(4)}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white"
+                  style={{ background: C.matched[0] }}>
+                  Proceed to Upload <ChevronRight size={13} />
+                </button>
+              )}
+              {/* Step 4: Confirm upload */}
+              {step === 4 && (
+                <button onClick={confirmUpload} disabled={busy || !portalRef.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${C.missed[0]}, ${C.missed[1]})` }}>
+                  <Send size={13} />Confirm Upload to F2R
+                </button>
+              )}
+              {/* Step 5: Record Ack */}
+              {step === 5 && sub?.status === "SUBMITTED" && (
+                <button onClick={recordAck} disabled={busy || !ackNumber.trim()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
+                  style={{ background: `linear-gradient(135deg, ${C.matched[0]}, ${C.matched[1]})` }}>
+                  <CheckCheck size={13} />Record Acknowledgement
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Dashboard ───────────────────────────────────────────────
 export default function Dashboard() {
   const [page, setPage] = useState("overview");
@@ -461,10 +1220,29 @@ export default function Dashboard() {
   const [formData, setFormData] = useState<Record<string, string>>({});
   const [actionSaving, setActionSaving] = useState(false);
   const [queueTab, setQueueTab] = useState("all");
+  // Submissions keyed by finding_id
+  const [submissions, setSubmissions] = useState<Record<string, EFTRSubmission>>({});
+  // Filing wizard state
+  const [filingWizardFinding, setFilingWizardFinding] = useState<Finding | null>(null);
   const skipNextFetch = useRef(false);
 
   function actionsToMap(list: ComplianceAction[]): Record<string, ComplianceAction> {
     return Object.fromEntries(list.map(a => [a.finding_id, a]));
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function restoreFromCache(cached: Record<string, any>) {
+    const entry: Run = cached.run ?? { run_id: cached.run_id, status: "COMPLETED", operator_id: "", started_at: null, completed_at: null };
+    setRuns([entry]);
+    skipNextFetch.current = true;
+    setRunId(cached.run_id);
+    setRunDetail(entry);
+    setRecon(cached.reconciliation ?? []);
+    setFindings(cached.findings ?? []);
+    setAudit(cached.audit_log ?? []);
+    setReperform(cached.reperform ?? []);
+    setActions(cached.actions ?? {});
+    if (cached.memo) setMemo(cached.memo as Memo);
   }
 
   async function loadRuns() {
@@ -473,35 +1251,62 @@ export default function Dashboard() {
   }
 
   useEffect(() => {
-    // 1. Try localStorage first — instant load, no API dependency
+    // 1. Check for ?run=<run_id> in URL — shared link from a colleague
+    const urlParams = new URLSearchParams(window.location.search);
+    const sharedRunId = urlParams.get("run");
+
+    if (sharedRunId) {
+      // Fetch shared run from the persistent backend DB
+      setLoading(true);
+      apiFetch("/health").then(() => setApiOnline(true)).catch(() => setApiOnline(false));
+      Promise.all([
+        apiFetch<Run>(`/runs/${sharedRunId}`),
+        apiFetch<{ results: ReconResult[] }>(`/runs/${sharedRunId}/reconciliation?page_size=500`),
+        apiFetch<{ findings: Finding[] }>(`/runs/${sharedRunId}/findings?page_size=500`),
+        apiFetch<{ results: ReperformResult[] }>(`/runs/${sharedRunId}/reperformance`),
+        apiFetch<{ entries: AuditEntry[] }>(`/runs/${sharedRunId}/audit?page_size=500`).catch(() => ({ entries: [] })),
+        apiFetch<ComplianceAction[]>(`/actions?run_id=${sharedRunId}`).catch(() => []),
+        apiFetch<Memo>(`/memo/${sharedRunId}`).catch(() => null),
+        apiFetch<EFTRSubmission[]>(`/submissions?run_id=${sharedRunId}`).catch(() => []),
+      ]).then(([run, reconData, findData, reperformData, auditData, actionsData, memoData, subsData]) => {
+        const entry = run as Run;
+        setRuns([entry]);
+        skipNextFetch.current = true;
+        setRunId(sharedRunId);
+        setRunDetail(entry);
+        setRecon(reconData.results ?? []);
+        setFindings(findData.findings ?? []);
+        setReperform(reperformData.results ?? []);
+        setAudit(auditData.entries ?? []);
+        setActions(actionsToMap(actionsData ?? []));
+        if (memoData) setMemo(memoData as Memo);
+        const subsMap: Record<string, EFTRSubmission> = {};
+        (subsData as EFTRSubmission[] ?? []).forEach(s => { subsMap[s.finding_id] = s; });
+        setSubmissions(subsMap);
+      }).catch(() => {
+        // Shared run not found — fall through to localStorage
+        const cached = loadFromStorage();
+        if (cached?.run_id) restoreFromCache(cached);
+      }).finally(() => setLoading(false));
+      return;
+    }
+
+    // 2. Try localStorage — instant load, no API call needed
     const cached = loadFromStorage();
     if (cached?.run_id) {
-      const entry: Run = cached.run ?? { run_id: cached.run_id, status: "COMPLETED", operator_id: "", started_at: null, completed_at: null };
-      setRuns([entry]);
-      skipNextFetch.current = true;
-      setRunId(cached.run_id);
-      setRunDetail(entry);
-      setRecon(cached.reconciliation ?? []);
-      setFindings(cached.findings ?? []);
-      setAudit(cached.audit_log ?? []);
-      setReperform(cached.reperform ?? []);
-      setActions(cached.actions ?? {});
-      if (cached.memo) setMemo(cached.memo as Memo);
+      restoreFromCache(cached);
       setLoading(false);
+      apiFetch("/health").then(() => setApiOnline(true)).catch(() => setApiOnline(false));
+      return;
     }
 
-    // 2. Ping health in background (doesn't block display)
-    apiFetch("/health").then(() => setApiOnline(true)).catch(() => setApiOnline(false));
-
-    // 3. If nothing in storage, fall back to live API
-    if (!cached?.run_id) {
-      (async () => {
-        try { await apiFetch("/health"); setApiOnline(true); } catch { setApiOnline(false); }
-        const d = await loadRuns();
-        if (d.length) setRunId(d[0].run_id);
-        setLoading(false);
-      })();
-    }
+    // 3. Nothing cached — try live API
+    (async () => {
+      try { await apiFetch("/health"); setApiOnline(true); } catch { setApiOnline(false); }
+      const d = await loadRuns();
+      if (d.length) setRunId(d[0].run_id);
+      setLoading(false);
+    })();
   }, []);
 
   useEffect(() => {
@@ -516,7 +1321,8 @@ export default function Dashboard() {
       apiFetch<{ entries: AuditEntry[] }>(`/runs/${runId}/audit?page_size=500`).catch(() => ({ entries: [] })),
       apiFetch<ComplianceAction[]>(`/actions?run_id=${runId}`).catch(() => []),
       apiFetch<Memo>(`/memo/${runId}`).catch(() => null),
-    ]).then(([run, reconData, findData, reperformData, auditData, actionsData, memoData]) => {
+      apiFetch<EFTRSubmission[]>(`/submissions?run_id=${runId}`).catch(() => []),
+    ]).then(([run, reconData, findData, reperformData, auditData, actionsData, memoData, subsData]) => {
       setRunDetail(run);
       setRecon(reconData.results ?? []);
       setFindings(findData.findings ?? []);
@@ -524,6 +1330,9 @@ export default function Dashboard() {
       setAudit(auditData.entries ?? []);
       setActions(actionsToMap(actionsData ?? []));
       if (memoData) setMemo(memoData as Memo);
+      const subsMap: Record<string, EFTRSubmission> = {};
+      (subsData as EFTRSubmission[] ?? []).forEach(s => { subsMap[s.finding_id] = s; });
+      setSubmissions(subsMap);
     }).finally(() => setLoading(false));
   }, [runId]);
 
@@ -594,14 +1403,18 @@ export default function Dashboard() {
     !["filed", "resolved"].includes(actions[f.finding_id]?.status ?? "open")
   ).length;
 
+  // Badge: submissions in PENDING_APPROVAL state need checker action
+  const pendingApprovalCount = Object.values(submissions).filter(s => s.status === "PENDING_APPROVAL").length;
+
   const navItems = [
-    { id: "overview",  icon: LayoutDashboard, label: "Overview",       badge: 0 },
-    { id: "queue",     icon: ListChecks,      label: "Action Queue",   badge: openActionCount },
-    { id: "missed",    icon: FileX,           label: "Missed Reports", badge: 0 },
-    { id: "findings",  icon: ShieldAlert,     label: "Rule Findings",  badge: 0 },
-    { id: "reperform", icon: Scale,           label: "Reperformance",  badge: 0 },
-    { id: "audit",     icon: ScrollText,      label: "Audit Log",      badge: 0 },
-    { id: "memo",      icon: BookOpen,        label: "Manager Memo",   badge: 0 },
+    { id: "overview",     icon: LayoutDashboard, label: "Overview",          badge: 0 },
+    { id: "queue",        icon: ListChecks,      label: "Action Queue",      badge: openActionCount },
+    { id: "missed",       icon: FileX,           label: "Missed Reports",    badge: 0 },
+    { id: "findings",     icon: ShieldAlert,     label: "Rule Findings",     badge: 0 },
+    { id: "submissions",  icon: Send,            label: "Submissions",       badge: pendingApprovalCount },
+    { id: "reperform",    icon: Scale,           label: "Reperformance",     badge: 0 },
+    { id: "audit",        icon: ScrollText,      label: "Audit Log",         badge: 0 },
+    { id: "memo",         icon: BookOpen,        label: "Manager Memo",      badge: 0 },
   ];
 
   // ── Filtered data ──────────────────────────────────────────────
@@ -811,6 +1624,24 @@ export default function Dashboard() {
             </select>
             <ChevronDown size={12} />
           </div>
+        )}
+        {/* Share button — copies a link colleague can open to see the same data */}
+        {runId && (
+          <button
+            onClick={() => {
+              const url = `${window.location.origin}${window.location.pathname}?run=${runId}`;
+              navigator.clipboard.writeText(url).then(() => {
+                alert("Share link copied!\n\nSend this to a colleague:\n" + url);
+              }).catch(() => {
+                prompt("Copy this share link:", url);
+              });
+            }}
+            title="Copy shareable link"
+            className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold border transition-colors hover:bg-purple-50"
+            style={{ borderColor: "#DDD6FE", color: C.missed[0] }}>
+            <Share2 size={13} />
+            Share
+          </button>
         )}
         {/* Clear data button — only shown when data exists */}
         {(recon.length > 0 || findings.length > 0) && (
@@ -1049,6 +1880,7 @@ export default function Dashboard() {
   const drawer = selectedFinding && (() => {
     const f = selectedFinding;
     const a = actions[f.finding_id];
+    const sub = submissions[f.finding_id];
     const detail = f.detail as Record<string, string | number | string[]>;
     const isBreach = f.severity === "BREACH";
     const isWarn = f.severity === "WARN";
@@ -1122,7 +1954,8 @@ export default function Dashboard() {
                     <ActionStatusBadge status={a.status} />
                     <span className="text-xs" style={{ color: C.muted }}>by {a.operator_id}</span>
                   </div>
-                  {a.filed_ref && <p className="text-xs"><span style={{ color: C.muted }}>FINTRAC Ref: </span><span className="font-mono font-semibold">{a.filed_ref}</span></p>}
+                  {a.filed_ref && <p className="text-xs"><span style={{ color: C.muted }}>Portal Ref: </span><span className="font-mono font-semibold">{a.filed_ref}</span></p>}
+                  {sub && <p className="text-xs"><span style={{ color: C.muted }}>Submission: </span><span className="font-semibold">{sub.status.replace(/_/g, " ")}{sub.ack_number ? ` · ACK: ${sub.ack_number}` : ""}</span></p>}
                   {a.decision && <p className="text-xs"><span style={{ color: C.muted }}>Decision: </span><span className="font-semibold capitalize">{a.decision}</span></p>}
                   {a.notes && <p className="text-xs p-2 rounded-lg mt-1" style={{ background: "#EEF2FF", color: "#3730A3" }}>💬 {a.notes}</p>}
                   {a.updated_at && <p className="text-xs" style={{ color: C.muted }}>Last updated {fmtDate(a.updated_at)}</p>}
@@ -1134,7 +1967,7 @@ export default function Dashboard() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Actions</p>
               <div className="flex flex-wrap gap-2">
-                {isBreach && <ActionBtn icon={CheckCheck} label="File EFTR" color={C.matched[0]} onClick={() => setActionForm("file")} />}
+                {isBreach && <ActionBtn icon={FileText} label="File EFTR" color={C.matched[0]} onClick={() => { setSelectedFinding(null); setActionForm(null); setFormData({}); setFilingWizardFinding(f); }} />}
                 {isWarn && isTravelRule && <ActionBtn icon={Gavel} label="Log Decision" color={C.chart[0]} onClick={() => setActionForm("decision")} />}
                 {isWarn && !isTravelRule && <ActionBtn icon={CheckCheck} label="Mark Resolved" color={C.matched[0]} onClick={() => saveAction(f, { status: "resolved", operator_id: runDetail?.operator_id ?? "unknown" })} />}
                 <ActionBtn icon={Ban} label="Dispute" color={C.warn[0]} onClick={() => setActionForm("dispute")} />
@@ -1144,28 +1977,6 @@ export default function Dashboard() {
             </div>
 
             {/* Inline forms */}
-            {actionForm === "file" && (
-              <div className="rounded-xl p-4 flex flex-col gap-3 border" style={{ borderColor: C.matched[0], background: "#F0FDF4" }}>
-                <p className="text-xs font-semibold" style={{ color: C.matched[0] }}>File EFTR — Enter FINTRAC Reference</p>
-                <input value={formData.filed_ref ?? ""} onChange={e => setFormData(d => ({ ...d, filed_ref: e.target.value }))}
-                  placeholder="e.g. EFTR-2026-001234"
-                  className="rounded-lg border px-3 py-2 text-sm outline-none"
-                  style={{ borderColor: C.border }} />
-                <input value={formData.notes ?? ""} onChange={e => setFormData(d => ({ ...d, notes: e.target.value }))}
-                  placeholder="Notes (optional)" className="rounded-lg border px-3 py-2 text-sm outline-none"
-                  style={{ borderColor: C.border }} />
-                <div className="flex gap-2">
-                  <button disabled={!formData.filed_ref || actionSaving}
-                    onClick={() => saveAction(f, { status: "filed", filed_ref: formData.filed_ref, notes: formData.notes || null, operator_id: runDetail?.operator_id ?? "unknown" })}
-                    className="px-4 py-2 rounded-lg text-xs font-semibold text-white disabled:opacity-50"
-                    style={{ background: C.matched[0] }}>
-                    {actionSaving ? "Saving…" : "Confirm Filing"}
-                  </button>
-                  <button onClick={() => { setActionForm(null); setFormData({}); }}
-                    className="px-4 py-2 rounded-lg text-xs font-semibold" style={{ background: C.border }}>Cancel</button>
-                </div>
-              </div>
-            )}
 
             {actionForm === "decision" && (
               <div className="rounded-xl p-4 flex flex-col gap-3 border" style={{ borderColor: C.chart[0], background: "#F5F3FF" }}>
@@ -1645,14 +2456,110 @@ export default function Dashboard() {
     </div>
   );
 
+  // ── Submissions page ───────────────────────────────────────────
+  const SUB_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
+    DRAFT:             { bg: "#F1F5F9", text: "#475569" },
+    VALIDATED:         { bg: "#DBEAFE", text: "#1D4ED8" },
+    FILE_READY:        { bg: "#EDE9FE", text: "#6D28D9" },
+    PENDING_APPROVAL:  { bg: "#FFEDD5", text: "#C2410C" },
+    CHECKER_REJECTED:  { bg: "#FEE2E2", text: "#B91C1C" },
+    APPROVED:          { bg: "#D1FAE5", text: "#047857" },
+    SUBMITTED:         { bg: "#DBEAFE", text: "#1D4ED8" },
+    ACKNOWLEDGED:      { bg: "#D1FAE5", text: "#047857" },
+    FINTRAC_REJECTED:  { bg: "#FEE2E2", text: "#B91C1C" },
+  };
+  function SubStatusBadge({ status }: { status: string }) {
+    const s = SUB_STATUS_COLORS[status] ?? { bg: "#F1F5F9", text: "#475569" };
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold"
+        style={{ background: s.bg, color: s.text }}>
+        {status.replace(/_/g, " ")}
+      </span>
+    );
+  }
+
+  const subList = runId
+    ? Object.values(submissions).filter(s => s.run_id === runId)
+    : Object.values(submissions);
+
+  const submissionsPage = (
+    <div className="flex flex-col gap-4">
+      {/* Summary stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {[
+          { label: "Total Filed",       count: subList.length,                                          color: C.missed[0] },
+          { label: "Pending Approval",  count: subList.filter(s => s.status === "PENDING_APPROVAL").length, color: C.warn[0] },
+          { label: "Submitted to F2R",  count: subList.filter(s => ["SUBMITTED","ACKNOWLEDGED"].includes(s.status)).length, color: C.chart[1] },
+          { label: "Acknowledged",      count: subList.filter(s => s.status === "ACKNOWLEDGED").length, color: C.matched[0] },
+        ].map(({ label, count, color }) => (
+          <div key={label} className="rounded-2xl p-4 flex flex-col gap-1 shadow-sm border"
+            style={{ background: C.surface, borderColor: C.border }}>
+            <p className="text-2xl font-bold" style={{ color }}>{count}</p>
+            <p className="text-xs" style={{ color: C.muted }}>{label}</p>
+          </div>
+        ))}
+      </div>
+
+      <TablePanel
+        title={`EFTR Submissions (${subList.length})`}
+        controls={
+          subList.length === 0 ? undefined : (
+            <span className="text-xs" style={{ color: C.muted }}>
+              Click a row to continue the filing workflow
+            </span>
+          )
+        }
+      >
+        <thead>
+          <tr>
+            <Th>Transaction</Th><Th>Status</Th><Th>Maker</Th><Th>Checker</Th>
+            <Th>Portal Ref</Th><Th>Ack #</Th><Th>Amend</Th><Th>Created</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {subList.length === 0
+            ? <EmptyRow cols={8} msg="No submissions yet — click 'File EFTR' on a BREACH finding to start a filing" />
+            : subList.map(s => {
+              const finding = findings.find(f => f.finding_id === s.finding_id);
+              return (
+                <tr key={s.submission_id}
+                  className="hover:bg-gray-50 transition-colors cursor-pointer"
+                  onClick={() => {
+                    const f = finding ?? { finding_id: s.finding_id, rule_code: "UNKNOWN", rule_version: 1, severity: "BREACH", transaction_id: s.transaction_id, detail: {}, created_at: s.created_at } as Finding;
+                    setFilingWizardFinding(f);
+                  }}>
+                  <Td><span className="text-xs font-mono">{s.transaction_id ?? "—"}</span></Td>
+                  <Td><SubStatusBadge status={s.status} /></Td>
+                  <Td><span className="text-xs">{s.maker_id}</span></Td>
+                  <Td><span className="text-xs">{s.checker_id ?? "—"}</span></Td>
+                  <Td><span className="text-xs font-mono">{s.portal_ref ?? "—"}</span></Td>
+                  <Td><span className="text-xs font-mono">{s.ack_number ?? "—"}</span></Td>
+                  <Td>
+                    {s.amendment_of_id
+                      ? <span className="text-xs px-1.5 py-0.5 rounded-full font-semibold"
+                          style={{ background: "#EDE9FE", color: "#6D28D9" }}>
+                          v{s.amendment_number}
+                        </span>
+                      : <span className="text-xs" style={{ color: C.muted }}>—</span>}
+                  </Td>
+                  <Td><span className="text-xs">{fmtDate(s.created_at)}</span></Td>
+                </tr>
+              );
+            })}
+        </tbody>
+      </TablePanel>
+    </div>
+  );
+
   const pages: Record<string, React.ReactNode> = {
-    overview:  overviewPage,
-    queue:     actionQueuePage,
-    missed:    missedPage,
-    findings:  findingsPage,
-    reperform: reperformPage,
-    audit:     auditPage,
-    memo:      memoPage,
+    overview:    overviewPage,
+    queue:       actionQueuePage,
+    missed:      missedPage,
+    findings:    findingsPage,
+    submissions: submissionsPage,
+    reperform:   reperformPage,
+    audit:       auditPage,
+    memo:        memoPage,
   };
 
   return (
@@ -1673,6 +2580,34 @@ export default function Dashboard() {
         <UploadModal
           onClose={() => setShowUpload(false)}
           onRunCreated={handleRunCreated}
+        />
+      )}
+
+      {filingWizardFinding && (
+        <FilingWizard
+          finding={filingWizardFinding}
+          runId={runId}
+          operatorId={runDetail?.operator_id ?? "unknown"}
+          onClose={() => setFilingWizardFinding(null)}
+          onComplete={(sub) => {
+            // Update submissions map so the page and badges refresh
+            setSubmissions(prev => ({ ...prev, [sub.finding_id]: sub }));
+            // If upload confirmed, also mark the ComplianceAction as filed
+            if (sub.status === "SUBMITTED" || sub.status === "ACKNOWLEDGED") {
+              setActions(prev => {
+                const existing = prev[sub.finding_id];
+                if (!existing) return prev;
+                return {
+                  ...prev,
+                  [sub.finding_id]: {
+                    ...existing,
+                    status: "filed",
+                    filed_ref: sub.portal_ref ?? existing.filed_ref,
+                  },
+                };
+              });
+            }
+          }}
         />
       )}
     </div>
