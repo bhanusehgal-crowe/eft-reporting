@@ -207,7 +207,6 @@ def _run_pipeline(run_id: str, eft_file: str, reported_file: str, operator_id: s
     from src.eftr.ingest.reported_ingestor import ReportedIngestor
     from src.eftr.reconciliation.aggregation import AggregationEngine
     from src.eftr.reconciliation.engine import ReconciliationEngine
-    from src.eftr.reconciliation.report import MissedTransactionsReporter
     from src.eftr.rules.engine import RulesEngine
 
     with SessionLocal() as session:
@@ -222,7 +221,6 @@ def _run_pipeline(run_id: str, eft_file: str, reported_file: str, operator_id: s
             ReconciliationEngine(session, run_id, operator_id).run()
             AggregationEngine(session, run_id, operator_id).run()
             RulesEngine(session, run_id, operator_id).run()
-            MissedTransactionsReporter(session, run_id, operator_id).generate()
 
             run.status = "COMPLETED"
             run.completed_at = utcnow()

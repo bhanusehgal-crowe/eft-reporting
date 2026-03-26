@@ -11,10 +11,10 @@ from src.eftr.rules.handlers import (
 # Handlers have different signatures; this registry normalizes them via lambdas.
 
 RULE_REGISTRY = {
-    "FINTRAC_SINGLE_THRESHOLD": lambda eft, rep, rep_ids, rule: threshold.evaluate(eft, rep_ids, rule),
-    "FINTRAC_FILING_DEADLINE": lambda eft, rep, rep_ids, rule: deadline.evaluate(eft, rep, rule),
-    "FINTRAC_MANDATORY_FIELDS": lambda eft, rep, rep_ids, rule: mandatory_fields.evaluate_mandatory_fields(eft, rule),
-    "FINTRAC_TRAVEL_RULE": lambda eft, rep, rep_ids, rule: mandatory_fields.evaluate_travel_rule(eft, rule),
-    "FINTRAC_FX_CONVERSION": lambda eft, rep, rep_ids, rule: fx_conversion.evaluate(eft, rep, rule),
-    "FINTRAC_OVER_REPORTING": lambda eft, rep, rep_ids, rule: over_reporting.evaluate(eft, rep_ids, rule),
+    "FINTRAC_SINGLE_THRESHOLD":  lambda eft, rep, rep_ids, rule: threshold.evaluate(eft, rep, rep_ids, rule),
+    "FINTRAC_FILING_DEADLINE":   lambda eft, rep, rep_ids, rule: deadline.evaluate(eft, rep, rep_ids, rule),
+    "FINTRAC_MANDATORY_FIELDS":  lambda eft, rep, rep_ids, rule: mandatory_fields.evaluate(eft, rep, rep_ids, rule),
+    "FINTRAC_TRAVEL_RULE":       lambda eft, rep, rep_ids, rule: mandatory_fields.evaluate(eft, rep, rep_ids, rule),
+    "FINTRAC_FX_CONVERSION":     lambda eft, rep, rep_ids, rule: fx_conversion.evaluate(eft, rep, rule),
+    "FINTRAC_OVER_REPORTING":    lambda eft, rep, rep_ids, rule: over_reporting.evaluate(eft, rep_ids, rule),
 }

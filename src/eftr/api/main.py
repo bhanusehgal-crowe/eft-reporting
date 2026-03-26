@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.eftr.api.routers import actions, memo, reconciliation, reports, rules, runs, submissions
+from src.eftr.api.routers import actions, memo, reconciliation, rules, runs, submissions
 
 
 def _bootstrap():
@@ -66,7 +66,6 @@ app.add_middleware(
 app.include_router(runs.router, prefix="/runs", tags=["runs"])
 app.include_router(reconciliation.router, prefix="/runs", tags=["reconciliation"])
 app.include_router(rules.router, prefix="/rules", tags=["rules"])
-app.include_router(reports.router, prefix="/reports", tags=["reports"])
 app.include_router(actions.router, prefix="/actions", tags=["actions"])
 app.include_router(memo.router, prefix="/memo", tags=["memo"])
 app.include_router(submissions.router, prefix="/submissions", tags=["submissions"])

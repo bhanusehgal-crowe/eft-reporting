@@ -1,5 +1,16 @@
 {
+  "buildCommand": "cd dashboard && npm install && npm run build",
+  "outputDirectory": "dashboard/.next",
+  "framework": "nextjs",
+  "installCommand": "cd dashboard && npm install",
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 30,
+      "memory": 1024
+    }
+  },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
+    { "source": "/api/:path*", "destination": "/api/index" },
+    { "source": "/(.*)", "destination": "/$1" }
   ]
 }

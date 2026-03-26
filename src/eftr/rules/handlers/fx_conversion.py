@@ -1,24 +1,14 @@
-from decimal import Decimal
-
-import pandas as pd
+"""FINTRAC_FX_CONVERSION rule handler — pandas-free."""
 
 
-def evaluate(eft_df: pd.DataFrame, rep_df: pd.DataFrame, rule: dict) -> list[dict]:
-    """
-    FINTRAC_FX_CONVERSION: Reported CAD amount differs from BoC-derived amount by > tolerance.
-    This is a placeholder check — full reperformance happens in Phase 2.
-    Checks if currency != CAD and no cad_conversion_rate is set.
-    """
-    tolerance_pct = rule.get("parameters", {}).get("tolerance_pct", 0.01)
+def evaluate(eft_rows: list[dict], rep_rows: list[dict], rule: dict) -> list[dict]:
     findings = []
-
-    for _, row in eft_df.iterrows():
-        currency = str(row.get("currency_code", "")).upper()
+    for row in eft_rows:
+        currency = str(row.get("currency_code") or "").upper()
         if currency == "CAD":
             continue
-
-        cad_conversion_rate = row.get("cad_conversion_rate")
-        if not cad_conversion_rate or str(cad_conversion_rate).strip() in ("", "None", "nan"):
+        rate = row.get("cad_conversion_rate")
+        if not rate or str(rate).strip() in ("", "None", "nan"):
             findings.append({
                 "rule_code": rule["rule_code"],
                 "rule_id": rule.get("rule_id", ""),
@@ -27,9 +17,7 @@ def evaluate(eft_df: pd.DataFrame, rep_df: pd.DataFrame, rule: dict) -> list[dic
                 "severity": rule["severity"],
                 "detail": {
                     "currency_code": currency,
-                    "cad_conversion_rate": str(cad_conversion_rate),
                     "reason": f"Foreign currency {currency} EFT has no BoC conversion rate recorded",
                 },
             })
-
     return findings

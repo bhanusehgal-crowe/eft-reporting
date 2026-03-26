@@ -1,83 +1,64 @@
+"""Reconciliation matchers — pandas-free."""
 from decimal import Decimal
-
-import pandas as pd
 
 
 def exact_id_match(
-    eft_df: pd.DataFrame, reported_df: pd.DataFrame
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Tier 1: Exact match on transaction_id ↔ reported_transaction_id.
-    Returns (matched, unmatched_eft, unmatched_reported).
-    """
-    merged = eft_df.merge(
-        reported_df,
-        left_on="transaction_id",
-        right_on="reported_transaction_id",
-        how="inner",
-        suffixes=("_eft", "_rep"),
-    )
-    matched_eft_ids = set(merged["transaction_id"])
-    matched_rep_ids = set(merged["reported_transaction_id"])
+    eft_rows: list[dict], reported_rows: list[dict]
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Tier 1: match transaction_id ↔ reported_transaction_id exactly."""
+    rep_by_tid = {str(r.get("reported_transaction_id", "")): r for r in reported_rows}
 
-    unmatched_eft = eft_df[~eft_df["transaction_id"].isin(matched_eft_ids)].copy()
-    unmatched_rep = reported_df[
-        ~reported_df["reported_transaction_id"].isin(matched_rep_ids)
-    ].copy()
+    matched, unmatched_eft, matched_rep_ids = [], [], set()
+    for eft in eft_rows:
+        tid = str(eft.get("transaction_id", ""))
+        if tid in rep_by_tid:
+            rep = rep_by_tid[tid]
+            matched.append({**eft, **{f"{k}_rep": v for k, v in rep.items()}})
+            matched_rep_ids.add(tid)
+        else:
+            unmatched_eft.append(eft)
 
-    return merged, unmatched_eft, unmatched_rep
+    unmatched_rep = [r for r in reported_rows
+                     if str(r.get("reported_transaction_id", "")) not in matched_rep_ids]
+    return matched, unmatched_eft, unmatched_rep
 
 
 def fuzzy_match(
-    unmatched_eft: pd.DataFrame,
-    unmatched_rep: pd.DataFrame,
+    unmatched_eft: list[dict],
+    unmatched_rep: list[dict],
     amount_tolerance: Decimal = Decimal("0.01"),
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Tier 2: Fuzzy match on (cad_amount ± tolerance, value_date, beneficiary_account).
-    Returns (matched, remaining_eft, remaining_rep).
-    """
-    if unmatched_eft.empty or unmatched_rep.empty:
-        return pd.DataFrame(), unmatched_eft, unmatched_rep
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Tier 2: fuzzy match on (cad_amount ± tolerance, value_date)."""
+    if not unmatched_eft or not unmatched_rep:
+        return [], unmatched_eft, unmatched_rep
 
-    matched_rows = []
-    used_rep_indices = set()
-    remaining_eft_indices = []
+    matched, used_rep_indices, remaining_eft_indices = [], set(), []
 
-    for eft_idx, eft_row in unmatched_eft.iterrows():
+    for eft in unmatched_eft:
+        try:
+            eft_amount = float(eft.get("cad_amount") or 0)
+        except (ValueError, TypeError):
+            eft_amount = 0.0
+        eft_date = str(eft.get("value_date", ""))[:10]
         found = False
-        eft_amount = float(eft_row.get("cad_amount", 0))
-        eft_date = str(eft_row.get("value_date", ""))
-        eft_bene_account = str(eft_row.get("beneficiary_account", ""))
 
-        for rep_idx, rep_row in unmatched_rep.iterrows():
-            if rep_idx in used_rep_indices:
+        for i, rep in enumerate(unmatched_rep):
+            if i in used_rep_indices:
                 continue
+            try:
+                rep_amount = float(rep.get("reported_cad_amount") or rep.get("reported_amount") or 0)
+            except (ValueError, TypeError):
+                rep_amount = 0.0
+            rep_date = str(rep.get("report_date", ""))[:10]
 
-            rep_amount = float(rep_row.get("reported_cad_amount") or rep_row.get("reported_amount", 0))
-            rep_date = str(rep_row.get("report_date", ""))
-
-            amount_match = abs(eft_amount - rep_amount) <= float(amount_tolerance)
-            date_match = eft_date == rep_date
-            account_match = (
-                eft_bene_account
-                and eft_bene_account != ""
-                and eft_bene_account == str(rep_row.get("reported_transaction_id", ""))
-            )
-
-            if amount_match and date_match:
-                matched_rows.append(
-                    {**eft_row.to_dict(), **{f"{k}_rep": v for k, v in rep_row.to_dict().items()}}
-                )
-                used_rep_indices.add(rep_idx)
+            if abs(eft_amount - rep_amount) <= float(amount_tolerance) and eft_date == rep_date:
+                matched.append({**eft, **{f"{k}_rep": v for k, v in rep.items()}})
+                used_rep_indices.add(i)
                 found = True
                 break
 
         if not found:
-            remaining_eft_indices.append(eft_idx)
+            remaining_eft_indices.append(eft)
 
-    matched_df = pd.DataFrame(matched_rows)
-    remaining_eft = unmatched_eft.loc[remaining_eft_indices].copy() if remaining_eft_indices else pd.DataFrame(columns=unmatched_eft.columns)
-    remaining_rep = unmatched_rep[~unmatched_rep.index.isin(used_rep_indices)].copy()
-
-    return matched_df, remaining_eft, remaining_rep
+    remaining_rep = [r for i, r in enumerate(unmatched_rep) if i not in used_rep_indices]
+    return matched, remaining_eft_indices, remaining_rep
