@@ -3,5 +3,4 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-RUN sed -i 's/\r//' start.sh && chmod +x start.sh
-CMD ["/bin/sh", "start.sh"]
+CMD ["python", "-c", "import os,uvicorn; uvicorn.run('src.eftr.api.main:app', host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))"]
